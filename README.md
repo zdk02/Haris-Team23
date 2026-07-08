@@ -1,23 +1,33 @@
-# Haris - Phase 0 scaffold
+# Haris-Team23
 
-Do-nothing skeleton + frozen contracts. Goal of Phase 0: prove the plumbing and
-freeze the interfaces so two people can build in parallel tomorrow.
+A monitoring layer for multi-agent LLM apps. Haris sits between agents,
+inspects every inter-agent message, and flags secrets/PII, authorization,
+and information-flow problems before they cause harm.
 
-## Frozen contracts (do not change without telling your teammate)
-- `haris/schemas/message.py`  - Message
-- `haris/schemas/verdict.py`  - Verdict + Label
-- `haris/schemas/policy.py`   - Policy + PolicyRule + Mode (incl. data_subject)
-- `haris/agents/base.py`      - SecurityAgent.check(message, context) -> Verdict
-- `haris/state/base.py`       - StateStore (get_context / record_flow / get_lineage)
+## Scope decisions 
 
-## Skeleton
-- `haris/state/memory.py`              - throwaway in-memory StateStore
-- `haris/orchestrator/orchestrator.py` - calls ZERO agents, logs, passes through
-- `demo_app/interception.py`           - interception adapter (the seam)
-- `demo_app/run_demo.py`               - one message end-to-end (the milestone)
+- **Framework:** LangGraph only.
+- **Demo scenario:** hospital app — reads a patient record, summarizes it, emails the summary.
+- **Mode:** monitor first. Haris logs and flags but does **not** block yet, so a
+  false positive can never break the app during development. Enforce mode is turned on later.
+- **MVP agents:** Secrets & PII, Authorization, Information-flow.
+  Injection and Semantic are explicitly roadmap, not MVP.
 
-## Run
-    python -m venv .venv && source .venv/bin/activate
+## Project structure
+
+    haris/
+      schemas/       # frozen contracts: Message, Verdict, Policy
+      agents/        # SecurityAgent interface + the MVP agents
+      state/         # StateStore interface + in-memory implementation
+      orchestrator/  # routes a message through Haris
+      policy/        # policy engine
+    demo_app/        # hospital demo + interception adapter
+    tests/
+
+## Getting started
+
+    python -m venv .venv
+    source .venv/bin/activate        # Windows: .venv\Scripts\activate
     pip install -r requirements.txt
-    python -m demo_app.run_demo
+    python -m demo_app.run_demo      # one message end-to-end through Haris
     pytest
