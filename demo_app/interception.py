@@ -1,13 +1,18 @@
 """Interception adapter: the seam between the host agent app and Haris.
 
-Every inter-agent message is built into a Message and routed through the
-orchestrator. Returns whatever the orchestrator returns (unchanged in Phase 0).
+Builds a Message, sends it through the orchestrator, and unwraps the Decision
+into the content that should actually be delivered.
+
+  allow / log / flag -> original content
+  redact             -> Decision.final_content
+  block (enforce)    -> HarisBlocked propagates to the sender
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from haris.orchestrator.orchestrator import Orchestrator
+from haris.schemas.decision import Action, Decision
 from haris.schemas.message import Message
 
 
@@ -22,7 +27,8 @@ class InterceptionAdapter:
         receiver: str,
         content: str,
         metadata: Optional[dict[str, Any]] = None,
-    ) -> Message:
+    ) -> tuple[str, Decision]:
+        """Return the content to deliver, plus the Decision that produced it."""
         message = Message(
             session_id=session_id,
             sender=sender,
@@ -30,4 +36,8 @@ class InterceptionAdapter:
             content=content,
             metadata=metadata or {},
         )
-        return self.orchestrator.process(message)
+        decision = self.orchestrator.process(message)  # may raise HarisBlocked
+
+        if decision.action is Action.REDACT and decision.final_content is not None:
+            return decision.final_content, decision
+        return message.content, decision
