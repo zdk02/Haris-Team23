@@ -16,7 +16,7 @@ def main() -> None:
     haris = InterceptionAdapter(orchestrator)
 
     original = "Patient Jane Doe, DOB 1980-01-01, summary of visit ..."
-    out = haris.intercept(
+    delivered, decision = haris.intercept(
         session_id="demo-1",
         sender="record_reader",
         receiver="summarizer",
@@ -24,7 +24,8 @@ def main() -> None:
     )
 
     print("\n--- result ---")
-    print("passed through unchanged:", out.content == original)
+    print("action:", decision.action.value, "| enforced:", decision.enforced)
+    print("passed through unchanged:", delivered == original)
     print("lineage length:", len(store.get_lineage("demo-1")))
 
 
