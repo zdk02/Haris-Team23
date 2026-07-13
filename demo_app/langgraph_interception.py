@@ -64,6 +64,8 @@ class HarisLangGraph:
         sender: str,
         receiver: str,
         data_type: Optional[str] = None,
+        message_key: Optional[str] = None,
+        state_metadata_keys: Optional[list[str]] = None,
     ) -> Callable[[dict], dict]:
         """Return a node that runs `fn`, then routes its outgoing message through Haris.
 
@@ -71,10 +73,18 @@ class HarisLangGraph:
         works both inside a compiled LangGraph graph AND when called directly (which
         is how the tests exercise the real Haris path without needing langgraph).
 
+        Args:
+          sender / receiver: the two ends of this hop (for the Message + logging).
+          data_type: e.g. "PHI" or "summary" -- stashed in metadata for later agents.
+          message_key: which state field this node emits onward. Defaults to the
+            store-wide message_key. This is what lets one graph carry different
+            fields at different hops (the hospital app emits `record` then `summary`).
+          state_metadata_keys: extra state fields to copy into metadata so later
+            agents can see them -- e.g. ["recipient", "subject"] gives the
+            authorization / subject-aware agents the recipient and data_subject.
+
         Behaviour:
           * Reads the session id from state[session_key] (falls back to "default").
-          * Builds metadata carrying the receiver and the declared data_type -- the
-            hooks later agents (authorization, info-flow) will read.
           * Calls InterceptionAdapter.intercept(), which constructs a real Message,
             runs the Orchestrator, and returns (delivered_content, Decision).
           * Replaces the node's outgoing message with delivered_content, so any
@@ -83,10 +93,11 @@ class HarisLangGraph:
             propagates out of this node and halts the graph -- exactly the enforce
             semantics Phase 0 defined.
         """
+        key = message_key or self.message_key
 
         def node(state: dict) -> dict:
             delta = fn(state)
-            content = delta.get(self.message_key)
+            content = delta.get(key)
             if content is None:
                 return delta  # this node emitted no inter-agent message; nothing to inspect
 
@@ -94,6 +105,9 @@ class HarisLangGraph:
             metadata: dict[str, Any] = {"receiver": receiver}
             if data_type is not None:
                 metadata["data_type"] = data_type
+            for sk in (state_metadata_keys or []):
+                if sk in state:
+                    metadata[sk] = state[sk]
 
             # The Phase 0 spine. May raise HarisBlocked in enforce mode.
             delivered, decision = self.adapter.intercept(
@@ -105,6 +119,6 @@ class HarisLangGraph:
             )
             self.decisions.append(decision)
 
-            return {**delta, self.message_key: delivered}
+            return {**delta, key: delivered}
 
         return node
