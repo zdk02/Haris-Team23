@@ -17,7 +17,7 @@ from demo_app.hospital.haris_pipeline import build_haris_graph
 from haris.agents.infoflow import InformationFlowAgent
 from haris.orchestrator.orchestrator import Orchestrator
 from haris.schemas.policy import Mode, Policy
-from haris.state.memory import InMemoryStateStore
+from haris.state.graph_store import GraphStateStore
 
 
 def _raw_summary(subject: str, leak: str) -> str:
@@ -37,7 +37,7 @@ CASES = [
 
 
 def _run(name: str, subject: str, leak: str):
-    store = InMemoryStateStore()
+    store = GraphStateStore()
     orch = Orchestrator(store, agents=[InformationFlowAgent()],
                         policy=Policy(mode=Mode.ENFORCE))
     graph, haris = build_haris_graph(orch)
