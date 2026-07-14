@@ -203,13 +203,29 @@ pass. This is what makes the emailer's two-recipient choice a real security ques
   human-readable reason for the audit log.
 - Keep the rule evaluation pure and table-driven so new relationships are data, not code.
 
+> **Status: DONE (agent built; not yet wired into the demo orchestrator).**
+> `haris/agents/authorization.py` (`AuthorizationAgent`) + `tests/test_authorization.py`,
+> 10/10 green including integration through the real `resolve()` (BLOCK enforced in
+> ENFORCE, clamped to FLAG in MONITOR). Design decisions: relationship rules are a
+> `PolicyRule` table passed at construction (agents never receive the `Policy`), with `*`
+> wildcards and first-match-wins; the external-recipient egress check is separate
+> constructor config (`internal_domain` + `sensitive_types`) because the frozen
+> `PolicyRule` has no recipient field; default is fail-open (`default_allow=True`) so a
+> zero-config agent blocks only sensitive→external (catches TC5) without breaking the
+> demo, and `default_allow=False` gives strict default-deny. `data_subject` is read but
+> not enforced (reserved). The policy engine's relationship-rule `TODO` is intentionally
+> left unimplemented to avoid double-enforcement — authorization lives in the agent.
+> Remaining: add `AuthorizationAgent(...)` to the orchestrator's `agents=[...]` list where
+> you want it live (e.g. the hospital demo), with whatever rule table you choose.
+
 **Subtasks (checklist):**
-- [ ] Parse relationship rules from the `Policy` schema into a lookup
-- [ ] Implement the `SecurityAgent` contract; evaluate `sender→receiver→data_type`
-- [ ] Read recipient/data_type from `Message.metadata` as populated by the pipeline
-- [ ] Emit a clear reason string on denial for the audit trail
-- [ ] Verify TC5 (external recipient) is blocked/flagged; internal recipient passes
-- [ ] Unit tests over the rule table (allowed, denied, unknown data_type)
+- [x] Parse relationship rules from `PolicyRule` into a lookup (wildcard, first-match)
+- [x] Implement the `SecurityAgent` contract; evaluate `sender→receiver→data_type`
+- [x] Read recipient/data_type from `Message.metadata` as populated by the pipeline
+- [x] Emit a clear reason string on denial for the audit trail
+- [x] Verify TC5 (external recipient) is blocked; internal recipient passes
+- [x] Unit tests over the rule table (allow, deny, redact, wildcard, default-deny) + engine integration
+- [ ] Register `AuthorizationAgent` in the orchestrator's agent list for the demo (integration step)
 
 **Dependencies:** none — reads the policy schema only; fully parallel.
 
