@@ -96,10 +96,15 @@ frozen behavior (verified against `memory.py`) is: `record_flow(message)` append
 dashboard, and a taint query for the Info-flow agent. Nothing about the frozen three
 changes; the graph is the value-add over the in-memory store.
 
-> **Status: implemented** — `haris/state/graph_store.py` (`GraphStateStore`) plus
-> `tests/test_graph_store.py` exist and pass (6/6), including a parity test against the
-> real `InMemoryStateStore`. Remaining: wire it in wherever the store is constructed and
-> confirm `networkx` is in `requirements.txt`.
+> **Status: DONE** — `haris/state/graph_store.py` (`GraphStateStore`) + `tests/test_graph_store.py`
+> are on `main` and green (6/6, including a parity test vs the real `InMemoryStateStore`).
+> Wired into the pipeline: `demo_app/hospital/taint_spike.py` now constructs
+> `GraphStateStore()`, and the full suite passes end-to-end (32/32, including the real
+> LangGraph interception + infoflow tests) with an unchanged taint scorecard
+> (TC3 CATCH, TC1 pass, TC2 CATCH, paraphrase miss). `networkx` is in `requirements.txt`.
+> Only open item is the Module 11 dashboard hook, which is a forward note (nothing to do
+> until the dashboard exists). Run tests with `python -m pytest` (the interpreter that has
+> langgraph), not bare `pytest`.
 
 **Concretely, what to build.**
 - Implement the `StateStore` contract in `haris/state/graph_store.py`, mirroring
@@ -124,9 +129,9 @@ changes; the graph is the value-add over the in-memory store.
 - [x] `get_lineage(session_id) -> list[Message]`; `get_context -> {"history": [...]}` (frozen shapes)
 - [x] Expose an additive "sources that taint this artifact" query (`taint_sources`)
 - [x] Unit tests: parity, two-hop session, derived artifact, multi-subject (A and B) lineage
-- [ ] Swap `GraphStateStore` in at the `Orchestrator(state_store=...)` construction site
-- [ ] Add `networkx` to `requirements.txt` if not already present
-- [ ] Confirm the dashboard (Module 11) reads the graph via `.graph` / `session_subgraph`
+- [x] Swap `GraphStateStore` in at the construction site (`demo_app/hospital/taint_spike.py`)
+- [x] `networkx` present in `requirements.txt`
+- [ ] (forward note — blocked on Module 11) Dashboard reads the graph via `.graph` / `session_subgraph`
 
 **Dependencies:** none upstream; **downstream, Module 9 depends on this** — land the
 interface first.
