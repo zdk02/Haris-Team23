@@ -3,10 +3,10 @@
 A concrete StateStore backed by a NetworkX MultiDiGraph. It is a **drop-in** for
 InMemoryStateStore: the three frozen methods (`get_context`, `record_flow`,
 `get_lineage`) behave identically — same return types, same values — so anything
-that works with the in-memory store works with this one unchanged. The only
-difference is that, alongside the per-session message list, it also maintains a
-directed interaction graph for the dashboard (Module 11) and a taint query for
-the Information-flow agent (Module 9).
+that works with the in-memory store works with this one unchanged. Why use it
+instead of the in-memory store: it keeps the same per-session message list AND
+builds a real interaction graph on top — something a flat list can't give the
+dashboard.
 
 Parity (verified against haris/state/memory.py):
   * `get_context(session_id) -> {"history": list[Message]}`
