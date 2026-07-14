@@ -9,6 +9,10 @@ parallel**. Nobody is blocked waiting for a redesign: the contracts are frozen, 
 pipeline runs, and each module is a self-contained job against an interface that
 already exists.
 
+This is where the two-person parallelism pays off. Six modules, each described on its
+own terms below. Ownership is deliberately left open — pick them up off the board in
+whatever order suits the team, respecting only the dependency notes.
+
 ---
 
 ## What Phases 0 and 1 already gave us (do NOT rebuild)
@@ -23,10 +27,13 @@ already exists.
   (`demo_app/langgraph_interception.py :: HarisLangGraph.wrap`) routes each hop through
   `InterceptionAdapter → Orchestrator → Decision`. It can **observe, modify, and block**
   a message mid-flight — so redact/block enforcement is real, not aspirational.
-- **The orchestrator** runs today with zero agents in monitor mode, logging every hop
-  and recording it in the state store. Phase 2 gives it real agents; the plumbing does
+- **The orchestrator** (`haris/orchestrator/`, `Orchestrator.process()`) runs today with
+  zero agents in monitor mode. Per hop it calls `record_flow(message)`, then
+  `get_context()`, then each agent's `check(message, context)`, then `resolve()` for the
+  final `Decision`, logging every hop. Phase 2 gives it real agents; the plumbing does
   not change.
-- **The policy resolver** (`policy/engine.py`) already resolves a set of verdicts via
+- **The policy resolver** (`haris/policy/engine.py`, the `resolve()` function) already
+  resolves a set of verdicts via
   threshold → most-restrictive → redaction-compose → mode-gate, with a passing test
   suite. Phase 2 extends it to consume real multi-agent verdicts, not rebuilds it.
 - **A working Information-flow spike** (Step 5 finding). `haris/agents/infoflow.py`
@@ -78,35 +85,48 @@ lineage ledger, not just a flat log. So this module's **interface** is on everyo
 critical path even though its internals are not.
 
 **What "done" looks like.** A concrete `StateStore` implementation (the frozen contract)
-backed by a **NetworkX** directed graph, replacing `InMemoryStateStore` for real runs.
-Nodes represent agents and data artifacts; edges represent data flows between them
-(a hop from `summarizer` to `emailer` carrying a `summary` derived from patient A's
-`PHI`). Alongside the graph, a **data-lineage ledger** that, given a `session_id`,
-returns the ordered provenance of every artifact — origin node, `data_type`,
-`data_subject`, and what it was derived from. `get_lineage(session_id)` must return the
-full session history (it already does in the spine — keep that behavior and enrich it).
+backed by a **NetworkX** directed graph, that is a **true drop-in** for
+`InMemoryStateStore` (`haris/state/memory.py`) — the three frozen methods return
+byte-for-byte identical values so the existing pipeline works unchanged. Concretely, the
+frozen behavior (verified against `memory.py`) is: `record_flow(message)` appends the
+`Message`; `get_lineage(session_id) -> list[Message]`; `get_context(session_id) ->
+{"history": list[Message]}`. On top of that — and *only* additively — it maintains a
+**NetworkX interaction graph** (agents = nodes, each hop = an edge carrying
+`data_type` / `data_subject` / `content` / `timestamp` from `Message.metadata`) for the
+dashboard, and a taint query for the Info-flow agent. Nothing about the frozen three
+changes; the graph is the value-add over the in-memory store.
+
+> **Status: implemented** — `haris/state/graph_store.py` (`GraphStateStore`) plus
+> `tests/test_graph_store.py` exist and pass (6/6), including a parity test against the
+> real `InMemoryStateStore`. Remaining: wire it in wherever the store is constructed and
+> confirm `networkx` is in `requirements.txt`.
 
 **Concretely, what to build.**
-- Implement the `StateStore` contract in a real module (e.g. `haris/state/graph_store.py`),
-  drop-in compatible with wherever `InMemoryStateStore` is constructed today.
-- Model the interaction graph in NetworkX: add a node per agent hop, add an edge per data
-  flow, attach `data_type` / `data_subject` / origin metadata to nodes/edges.
-- Implement the lineage ledger API the Info-flow agent needs: given a session and the
-  current message, return which prior sources tainted it (origin + subject), so Module 9
-  never has to string-match the original record.
-- **Freeze the read-side interface first** (`get_lineage`, "what sources feed this
-  artifact") and announce it, so Module 9 can code against it while you optimize storage.
-- Preserve the audit-log/event shape Module 11 reads; if you add fields, add them
-  additively.
+- Implement the `StateStore` contract in `haris/state/graph_store.py`, mirroring
+  `InMemoryStateStore._flows` so the frozen methods are identical, then swap it in
+  wherever the store is constructed (the `Orchestrator(state_store=...)` call site).
+- Model the interaction graph in NetworkX **additively**: a node per agent, an edge per
+  hop, with `data_type` / `data_subject` / `content` / `timestamp` on the edge. Expose it
+  (`.graph`, `session_subgraph(session_id)`) for Module 11 — do not put it in the frozen
+  return values.
+- Surface taint for the Info-flow agent. The existing `infoflow.py` already reads
+  `context["history"]` (a `list[Message]`) and extracts its own tags, so **no interface
+  change is needed**; offer an additive `taint_sources(session_id)` helper as a
+  convenience for the promoted agent. Taint is coarse/session-level (Step 5).
+- **The read-side is already pinned by the frozen contract** (`get_lineage -> list[Message]`,
+  `get_context -> {"history": [...]}`), so Module 9 can code against it today.
+- Note the ordering: `Orchestrator.process()` calls `record_flow` **then** `get_context`,
+  so the current hop is the last item in `history` — match that (don't exclude it).
 
 **Subtasks (checklist):**
-- [ ] Implement `StateStore` over a NetworkX `DiGraph`; parity with `InMemoryStateStore`
-- [ ] Record every hop as node(s) + edge(s) with `data_type` / `data_subject` / origin
-- [ ] Build the lineage ledger: `get_lineage(session_id)` returns full ordered provenance
-- [ ] Expose a "sources that taint this artifact" query for the Info-flow agent
-- [ ] **Publish and freeze the read-side interface early** so Module 9 can start
-- [ ] Keep the event/audit-log format stable for the dashboard (Module 11)
-- [ ] Unit tests: two-hop session, derived artifact, multi-subject (A and B) lineage
+- [x] Implement `StateStore` over a NetworkX `MultiDiGraph`; **parity** with `InMemoryStateStore`
+- [x] Record every hop as node(s) + edge(s) with `data_type` / `data_subject` / origin
+- [x] `get_lineage(session_id) -> list[Message]`; `get_context -> {"history": [...]}` (frozen shapes)
+- [x] Expose an additive "sources that taint this artifact" query (`taint_sources`)
+- [x] Unit tests: parity, two-hop session, derived artifact, multi-subject (A and B) lineage
+- [ ] Swap `GraphStateStore` in at the `Orchestrator(state_store=...)` construction site
+- [ ] Add `networkx` to `requirements.txt` if not already present
+- [ ] Confirm the dashboard (Module 11) reads the graph via `.graph` / `session_subgraph`
 
 **Dependencies:** none upstream; **downstream, Module 9 depends on this** — land the
 interface first.
@@ -247,7 +267,7 @@ respecting thresholds and the current mode (monitor vs. enforce). That combiner 
 policy engine, and it lives right next to the orchestrator that collects the verdicts —
 so build them as a pair.
 
-**What "done" looks like.** `policy/engine.py` (which already resolves a verdict set via
+**What "done" looks like.** `haris/policy/engine.py` (whose `resolve()` already resolves a verdict set via
 threshold → most-restrictive → redaction-compose → mode-gate, with passing tests) is
 extended to consume the **real multi-agent verdicts** from Modules 7, 8, and 9 and emit
 the final `Decision`. Most-restrictive wins (a `block` beats a `redact` beats a `flag`
@@ -270,7 +290,7 @@ hop with every contributing verdict recorded in the audit log.
   decision land in the audit log (for Module 11).
 
 **Subtasks (checklist):**
-- [ ] Feed real multi-agent verdicts (Modules 7/8/9) into `policy/engine.py`
+- [ ] Feed real multi-agent verdicts (Modules 7/8/9) into `haris/policy/engine.py`
 - [ ] Confirm most-restrictive ordering: block > redact > flag > allow
 - [ ] Make multi-redaction compose (union masks) rather than overwrite
 - [ ] Verify the mode gate: monitor = log only; enforce = modify/block via the seam
