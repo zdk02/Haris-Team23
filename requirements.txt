@@ -7,4 +7,5 @@ detect-secrets
 networkx
 pydantic
 streamlit
+streamlit-agraph
 pytest
