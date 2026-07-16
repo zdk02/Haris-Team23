@@ -1,6 +1,9 @@
 langgraph
 presidio-analyzer
+presidio-anonymizer
 detect-secrets
+# Module 7 (secrets_pii) needs a spaCy model for Presidio; after pip install run:
+#   python -m spacy download en_core_web_sm
 networkx
 pydantic
 streamlit
