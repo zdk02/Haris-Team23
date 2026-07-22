@@ -123,6 +123,11 @@ class PIIDetector:
     def _ensure_engines(self) -> None:
         if self._analyzer is not None:
             return
+        import logging as _logging
+        # Presidio logs a WARNING for every predefined recognizer whose language it skips
+        # (es/it/pl while we run en) and for unmapped spaCy labels (CARDINAL). That is
+        # cosmetic noise -- quiet it so demo/CLI output is readable. Real errors still surface.
+        _logging.getLogger("presidio-analyzer").setLevel(_logging.ERROR)
         from presidio_analyzer import AnalyzerEngine
         from presidio_analyzer.nlp_engine import NlpEngineProvider
         from presidio_anonymizer import AnonymizerEngine
@@ -229,6 +234,11 @@ class SecretsPIIAgent(SecurityAgent):
         flag_threshold: float = DEFAULT_FLAG_THRESHOLD,
         secret_score: float = DEFAULT_SECRET_SCORE,
         secret_mask: str = DEFAULT_SECRET_MASK,
+        *,
+        internal_domains: Iterable[str] = ("hospital.internal",),
+        redact_on_egress_only: bool = True,
+        treat_missing_recipient_as_internal: bool = True,
+        always_redact_secrets: bool = False,
     ) -> None:
         self.pii = pii_detector or PIIDetector()
         self.secrets = secrets_detector or SecretsDetector()
@@ -236,6 +246,20 @@ class SecretsPIIAgent(SecurityAgent):
         self.flag_threshold = flag_threshold
         self.secret_score = secret_score
         self.secret_mask = secret_mask
+        # Boundary-awareness (mirrors AuthorizationAgent / InformationFlowAgent):
+        #   redact_on_egress_only=True  -> DETECT everywhere (always logged for the audit
+        #     trail), but only rewrite content (-> REDACT) when the message is leaving the
+        #     trust boundary. On a safe internal hop the finding is FLAGged and the content
+        #     is delivered UNCHANGED, so PII a downstream agent legitimately needs (e.g. the
+        #     patient's name to the treating doctor) is not scrubbed and never mangled.
+        #   redact_on_egress_only=False -> the original destination-agnostic behavior:
+        #     redact wherever anything is detected.
+        #   always_redact_secrets=True  -> credential exception: even on an internal hop,
+        #     mask hard secrets (keys/tokens) while still letting PII through.
+        self.internal_domains = tuple(d.lstrip("@").lower() for d in internal_domains)
+        self.redact_on_egress_only = redact_on_egress_only
+        self.treat_missing_recipient_as_internal = treat_missing_recipient_as_internal
+        self.always_redact_secrets = always_redact_secrets
 
     # -- SecurityAgent ------------------------------------------------------ #
 
@@ -250,17 +274,55 @@ class SecretsPIIAgent(SecurityAgent):
         if severity < self.flag_threshold:
             return self._pass(severity, findings)
 
-        redacted = self.pii.redact(text, pii_results) if pii_results else text
-        if secret_hits:
-            redacted = SecretsDetector.redact(redacted, secret_hits, self.secret_mask)
+        # Boundary decision: rewrite content only when leaving the trust boundary
+        # (or when not configured to gate on egress at all).
+        enforce_here = (not self.redact_on_egress_only) or self._is_egress(message)
+
+        if enforce_here:
+            redacted = self.pii.redact(text, pii_results) if pii_results else text
+            if secret_hits:
+                redacted = SecretsDetector.redact(redacted, secret_hits, self.secret_mask)
+            return Verdict(
+                agent_name=self.name,
+                label=Label.FLAG,
+                score=severity,
+                reason=self._describe(findings) + " (egress → redacting)",
+                redacted_content=redacted,
+            )
+
+        # Safe internal hop: log the finding, deliver unchanged. Optionally still mask
+        # hard secrets (never PII) so a credential can't be forwarded even internally.
+        if self.always_redact_secrets and secret_hits:
+            redacted = SecretsDetector.redact(text, secret_hits, self.secret_mask)
+            return Verdict(
+                agent_name=self.name,
+                label=Label.FLAG,
+                score=severity,
+                reason=self._describe(findings) + " (internal hop → secrets masked, PII logged)",
+                redacted_content=redacted,
+            )
 
         return Verdict(
             agent_name=self.name,
             label=Label.FLAG,
             score=severity,
-            reason=self._describe(findings),
-            redacted_content=redacted,
+            reason=self._describe(findings) + " (internal hop → logged, delivered unchanged)",
         )
+
+    # -- boundary helpers --------------------------------------------------- #
+
+    def _is_egress(self, message: Message) -> bool:
+        """True if this hop delivers to a recipient outside the trust boundary."""
+        recipient = (message.metadata or {}).get("recipient")
+        if not recipient:
+            # No recipient = an internal agent-to-agent handoff, not an external send.
+            return not self.treat_missing_recipient_as_internal
+        return not self._is_internal(str(recipient))
+
+    def _is_internal(self, recipient: str) -> bool:
+        r = recipient.lower()
+        return any(r.endswith("@" + d) or r.endswith("." + d) or r == d
+                   for d in self.internal_domains)
 
     # -- helpers ------------------------------------------------------------ #
 

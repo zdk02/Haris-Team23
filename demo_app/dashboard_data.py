@@ -132,12 +132,10 @@ def _process_capture(orch: Orchestrator, msg: Message, scenario: Scenario,
 
 
 def _build_agents(include_secrets: bool) -> list:
-    agents: list = []
-    if include_secrets:
-        agents.append(SecretsPIIAgent())
-    agents.append(AuthorizationAgent())
-    agents.append(InformationFlowAgent())
-    return agents
+    # Single source of truth: the canonical hospital line-up lives in the pipeline
+    # module, so the dashboard and the live `run_secured` pipeline can never drift.
+    from demo_app.hospital.haris_pipeline import build_hospital_agents
+    return build_hospital_agents(include_secrets)
 
 
 def presidio_available() -> bool:

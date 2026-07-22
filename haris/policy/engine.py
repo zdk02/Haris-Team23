@@ -12,20 +12,35 @@ Implements the four agreed rules:
 from __future__ import annotations
 
 from difflib import SequenceMatcher
+from typing import Optional
 from haris.schemas.decision import Action, Decision, most_restrictive, rank
 from haris.schemas.message import Message
 from haris.schemas.policy import Mode, Policy
 from haris.schemas.verdict import Label, Verdict
 
 # Helpers
-def _masked_substrings(original: str, redacted: str) -> list[str]:
-    # Recover the original substrings this agent replaced, by diffing its full
-    # rewrite against the original.
-    out: list[str] = []
+def _masked_spans(original: str, redacted: str, min_keep: int = 3) -> list[tuple[int, int]]:
+    # Recover, as (start, end) ranges in `original`, the spans this agent rewrote --
+    # by diffing its full rewrite against the original. Short unchanged runs (< min_keep
+    # chars) sitting *between* two changed regions are absorbed into the mask, so a
+    # character shared by chance (e.g. the 'S' in 'John Smith' vs '<PERSON>') can't
+    # fragment one identifier into '[REDACTED]S[REDACTED]'. Over-masking slightly is
+    # safe; fragmenting an identifier is not.
+    spans: list[tuple[int, int]] = []
+    cur: Optional[tuple[int, int]] = None
     for tag, i1, i2, _j1, _j2 in SequenceMatcher(a=original, b=redacted, autojunk=False).get_opcodes():
-        if tag != "equal" and i2 > i1:   # skip pure insertions (nothing in original to mask)
-            out.append(original[i1:i2])
-    return out
+        if tag == "equal":
+            if (i2 - i1) >= min_keep:
+                if cur is not None:
+                    spans.append(cur)
+                    cur = None
+            elif cur is not None:
+                cur = (cur[0], i2)          # absorb a short unchanged run into the open mask
+        elif i2 > i1:                        # replace / delete (pure insertions have i1 == i2)
+            cur = (i1, i2) if cur is None else (cur[0], i2)
+    if cur is not None:
+        spans.append(cur)
+    return spans
 
 def _verdict_action(v: Verdict, threshold: float) -> tuple[Action, bool]:
     # Rule 1: threshold first.
@@ -79,17 +94,36 @@ def _select_action(actions: list[tuple[Verdict, Action, bool]]) -> Action:
 
 
 def _compose_redactions(original_content: str, actions: list[tuple[Verdict, Action, bool]]) -> str:
-    # Rule 3: redactions compose. Each accepted agent's masks are applied onto the
-    # running content, so no agent's redaction is lost (Module 10: union masks,
-    # don't let the last writer win).
-    content = original_content
-
+    # Rule 3: redactions compose. Union every honored agent's masked spans (in ORIGINAL
+    # coordinates), merge overlapping/adjacent ranges, and rebuild the content once with
+    # a standardized [REDACTED] token. Working in span coordinates -- rather than
+    # str.replace on recovered substrings -- means no agent's mask is lost and a literal
+    # '[REDACTED]' one agent already emitted can't be re-matched by another (Module 10:
+    # union masks, don't let the last writer win).
+    spans: list[tuple[int, int]] = []
     for verdict, _, honor_redaction in actions:
         if honor_redaction and verdict.redacted_content is not None:
-            for masked in _masked_substrings(original_content, verdict.redacted_content):
-                content = content.replace(masked, "[REDACTED]")
+            spans.extend(_masked_spans(original_content, verdict.redacted_content))
 
-    return content
+    if not spans:
+        return original_content
+
+    spans.sort()
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    out: list[str] = []
+    prev = 0
+    for start, end in merged:
+        out.append(original_content[prev:start])
+        out.append("[REDACTED]")
+        prev = end
+    out.append(original_content[prev:])
+    return "".join(out)
 
 def _apply_mode(recommended_action: Action, mode: Mode) -> tuple[Action, bool]:
     # Rule 4: mode gates enforcement.

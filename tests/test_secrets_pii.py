@@ -90,7 +90,8 @@ def test_tc2_verbatim_phi_flags_with_redaction(agent):
 
 def test_tc2_dob_also_masked_once_flagged(agent):
     record = format_record(load_record("patient-A"))
-    v = agent.check(_msg(record), CTX)
+    # Egress recipient: on an outbound hop the agent redacts (see boundary tests below).
+    v = agent.check(_msg(record, recipient="outside@example.com"), CTX)
     # DATE_TIME is a weak signal on its own, but once the message is flagged
     # (the PERSON hit), every detected span is masked — including the DOB.
     assert "1980-02-14" not in v.redacted_content
@@ -99,7 +100,8 @@ def test_tc2_dob_also_masked_once_flagged(agent):
 # ---- planted credential --------------------------------------------------------
 
 def test_planted_credential_flags(agent):
-    v = agent.check(_msg(f'forwarding creds: aws_key = "{AWS_KEY}"'), CTX)
+    v = agent.check(_msg(f'forwarding creds: aws_key = "{AWS_KEY}"',
+                         recipient="outside@example.com"), CTX)
     assert v.label is Label.FLAG
     assert "secrets:" in v.reason
     assert AWS_KEY not in v.redacted_content
@@ -108,11 +110,62 @@ def test_planted_credential_flags(agent):
 
 def test_mixed_pii_and_credential(agent):
     text = f'Jane Doe uploaded her key: aws_key = "{AWS_KEY}"'
-    v = agent.check(_msg(text), CTX)
+    v = agent.check(_msg(text, recipient="outside@example.com"), CTX)
     assert v.label is Label.FLAG
     assert "PII:" in v.reason and "secrets:" in v.reason
     assert "Jane Doe" not in v.redacted_content
     assert AWS_KEY not in v.redacted_content
+
+
+# ---- boundary awareness: detect everywhere, enforce at the trust boundary --------
+
+def test_internal_hop_logs_pii_but_delivers_unchanged(agent):
+    """On a safe internal hop (recipient inside the trust boundary), the agent still
+    DETECTS and FLAGs for the audit trail, but does NOT redact -- the content is
+    delivered unchanged so a downstream agent that legitimately needs it (e.g. the
+    treating doctor) still sees it."""
+    record = format_record(load_record("patient-A"))
+    v = agent.check(_msg(record, recipient="doctor@hospital.internal"), CTX)
+    assert v.label is Label.FLAG                 # detected + logged
+    assert v.redacted_content is None            # but not redacted on a safe path
+    assert "internal hop" in v.reason
+
+
+def test_missing_recipient_treated_as_internal(agent):
+    """An agent-to-agent handoff with no recipient (e.g. record_reader -> summarizer)
+    is an internal hop by default: detected and logged, delivered unchanged."""
+    record = format_record(load_record("patient-A"))
+    v = agent.check(_msg(record), CTX)           # no recipient
+    assert v.label is Label.FLAG
+    assert v.redacted_content is None
+
+
+def test_egress_recipient_redacts(agent):
+    """Leaving the trust boundary flips enforcement on: redacted_content is produced."""
+    record = format_record(load_record("patient-A"))
+    v = agent.check(_msg(record, recipient="outside@example.com"), CTX)
+    assert v.label is Label.FLAG
+    assert v.redacted_content is not None
+    assert "Jane Doe" not in v.redacted_content
+
+
+def test_credential_exception_masks_secret_even_internally():
+    """With always_redact_secrets=True a hard secret is masked even on an internal hop,
+    while PII is still allowed through. Uses stub detectors so it needs no Presidio."""
+    class _FakePII:
+        def analyze(self, text):
+            return []
+        def redact(self, text, results=None):
+            return text
+    class _FakeSecrets:
+        def scan(self, text):
+            return [("AWS Access Key", AWS_KEY)] if AWS_KEY in text else []
+
+    a = SecretsPIIAgent(pii_detector=_FakePII(), secrets_detector=_FakeSecrets(),
+                        always_redact_secrets=True)
+    v = a.check(_msg(f'internal handoff: {AWS_KEY}', recipient="doctor@hospital.internal"), CTX)
+    assert v.label is Label.FLAG
+    assert v.redacted_content is not None and AWS_KEY not in v.redacted_content
 
 
 # ---- verdict shape --------------------------------------------------------------
@@ -132,7 +185,7 @@ def test_empty_content_passes(agent):
 # ---- integration with the real policy engine ------------------------------------
 
 def test_flag_with_redaction_resolves_redact_enforce_flag_monitor(agent):
-    m = _msg(format_record(load_record("patient-A")))
+    m = _msg(format_record(load_record("patient-A")), recipient="outside@example.com")
     v = agent.check(m, CTX)
     assert v.label is Label.FLAG and v.redacted_content is not None
 

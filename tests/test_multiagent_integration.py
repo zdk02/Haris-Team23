@@ -113,15 +113,22 @@ def test_tc3_to_external_monitor_flags_but_does_not_enforce():
 # TC5 recipient-dependence: same summary, internal recipient is permitted flow #
 # --------------------------------------------------------------------------- #
 
-def test_tc5_identified_to_internal_permits_flow_pii_still_redacts():
-    """Sent to the internal doctor: authorization permits the flow and info-flow
-    treats an in-boundary destination as allowed (PASS), but the Secrets/PII agent is
-    destination-agnostic and still redacts the name -> the composed action is REDACT."""
+def test_tc5_identified_to_internal_permits_flow_and_logs_pii():
+    """Sent to the internal doctor: authorization permits the flow, info-flow treats an
+    in-boundary destination as allowed (PASS), and the (boundary-aware) Secrets/PII agent
+    DETECTS the name but only LOGS it on this safe internal hop -- it does not redact.
+    So the composed action is FLAG (observed, delivered unchanged): the treating doctor
+    still sees 'Jane Doe', while the same summary to an external address is caught."""
+    m = _summary(IDENTIFIED, INTERNAL_DOCTOR)
     orch = _orchestrator(Mode.ENFORCE)
-    d = orch.process(_summary(IDENTIFIED, INTERNAL_DOCTOR))
-    assert d.action is Action.REDACT
-    assert d.enforced is True
-    assert "Jane Doe" not in (d.final_content or "")
+    d = orch.process(m)
+    assert d.action is Action.FLAG                    # logged, not redacted or blocked
+    assert d.final_content is None                    # nothing was rewritten
+    assert "Jane Doe" in m.content                    # delivered unchanged to the doctor
+    assert _agent_names(d) == ALL_AGENTS              # all three still contributed a verdict
+    # Secrets/PII detected PII (FLAG) but produced no redaction on the internal hop.
+    assert any(v.agent_name == "secrets_pii" and v.label.value == "flag"
+               and v.redacted_content is None for v in d.verdicts)
     assert any(v.agent_name == "infoflow" and v.label.value == "pass"
                for v in d.verdicts)                          # info-flow allowed it
     assert any(v.agent_name == "authorization" and v.label.value == "pass"
