@@ -31,6 +31,7 @@ from demo_app.langgraph_interception import HarisLangGraph
 from haris.agents.authorization import AuthorizationAgent
 from haris.agents.infoflow import InformationFlowAgent
 from haris.agents.secrets_pii import SecretsPIIAgent
+from haris.agents.subject_binding import SubjectBindingAgent
 from haris.orchestrator.orchestrator import Orchestrator
 from haris.schemas.decision import HarisBlocked
 from haris.schemas.policy import Mode, Policy
@@ -86,13 +87,18 @@ def build_hospital_agents(include_secrets: bool = True) -> list:
                               Needs Presidio + the spaCy model; pass include_secrets=False
                               for a no-Presidio run (the other two still work).
       2. AuthorizationAgent - stateless relationship + external-egress check (TC5).
-      3. InformationFlowAgent - lineage-based derived-leak / info-flow check (TC3),
+      3. SubjectBindingAgent - data-subject (patient-A vs patient-B) authorization (TC4):
+                              blocks data whose subject differs from the session's subject.
+                              Inert on a single-subject session; only a mixed-subject
+                              session trips it.
+      4. InformationFlowAgent - lineage-based derived-leak / info-flow check (TC3),
                               conditioned on the PHI origin in the GraphStateStore.
     """
     agents: list = []
     if include_secrets:
         agents.append(SecretsPIIAgent())
     agents.append(AuthorizationAgent())
+    agents.append(SubjectBindingAgent())
     agents.append(InformationFlowAgent())
     return agents
 
