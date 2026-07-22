@@ -19,9 +19,11 @@ another's result.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 from haris.agents.base import SecurityAgent
+from haris.audit import AuditLog
 from haris.policy.engine import resolve
 from haris.schemas.decision import Action, Decision, HarisBlocked
 from haris.schemas.message import Message
@@ -38,27 +40,38 @@ class Orchestrator:
         state_store: StateStore,
         agents: Optional[list[SecurityAgent]] = None,
         policy: Optional[Policy] = None,
+        audit_log: Optional[AuditLog] = None,
     ) -> None:
         self.state_store = state_store
         self.agents = agents or []          # ZERO agents in the skeleton
         self.policy = policy or Policy()    # defaults to MONITOR mode
+        # Optional durable record of every decision. When set, each processed message
+        # (including blocked ones) is appended before enforcement raises — the audit
+        # trail must record the block. Any app running through Haris populates it.
+        self.audit_log = audit_log
 
     def process(self, message: Message) -> Decision:
         self.state_store.record_flow(message)
         context = self.state_store.get_context(message.session_id)
 
+        t0 = time.perf_counter()
         verdicts = [self._safe_check(agent, message, context) for agent in self.agents]
         decision = resolve(message, verdicts, self.policy)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
 
         logger.info(
-            "HARIS %s -> %s | mode=%s | action=%s | enforced=%s | verdicts=%s",
+            "HARIS %s -> %s | mode=%s | action=%s | enforced=%s | latency=%.2fms | verdicts=%s",
             message.sender,
             message.receiver,
             self.policy.mode.value,
             decision.action.value,
             decision.enforced,
+            latency_ms,
             [(v.agent_name, v.label.value) for v in verdicts],
         )
+
+        if self.audit_log is not None:
+            self.audit_log.record(message, decision, latency_ms)
 
         # MONITOR mode: pass through unchanged no matter what.
         if decision.enforced and decision.action is Action.BLOCK:

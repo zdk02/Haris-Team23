@@ -121,6 +121,35 @@ VERDICT_DOT = {"allow": "🟢", "log": "⚪", "flag": "🟡", "redact": "🟣", 
 
 
 # --------------------------------------------------------------------------- #
+# Operator authentication                                                      #
+# --------------------------------------------------------------------------- #
+OPERATOR_TOKEN = os.environ.get("HARIS_DASHBOARD_TOKEN", "secret")
+
+
+def _authenticated() -> bool:
+    """The dashboard exposes Haris's security audit log — the most sensitive artifact in
+    the system — so only an authenticated operator may view it. MVP: a shared operator
+    token from the HARIS_DASHBOARD_TOKEN env var; verifying a real identity (SSO / IAM) is
+    a deployment concern. With no token configured the gate stays open for local dev, with
+    a visible notice."""
+    if not OPERATOR_TOKEN or st.session_state.get("operator_authed"):
+        return True
+    st.markdown("## 🔒 Haris — operator sign-in")
+    st.caption("This dashboard shows Haris's security audit log. "
+               "Enter the operator token to continue.")
+    token = st.text_input("Operator token", type="password", key="op_token")
+    if st.button("Sign in"):
+        if token == OPERATOR_TOKEN:
+            st.session_state["operator_authed"] = True
+            _rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+            if _rerun:
+                _rerun()
+        else:
+            st.error("Invalid operator token.")
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Cached heavy calls (Presidio init is the slow part — do it at most once)     #
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=False)
@@ -262,10 +291,16 @@ def _inspector(records):
         f'<span class="v" style="color:var({label_color.get(v["label"], "--text")})">'
         f'{v["label"].upper()} · {html.escape(v["reason"][:90])}</span></div>'
         for v in r["verdicts"])
-    lineage = ('<span class="hop">record_reader</span> → <span class="hop">summarizer</span>'
-               ' → <span class="hop">emailer</span>')
+    # Derive the lineage from the session's actual hops (app-agnostic) rather than
+    # hardcoding the hospital chain.
+    chain: list[str] = []
+    for x in [z for z in records if z["session_id"] == r["session_id"]]:
+        for n in (x["sender"], x["receiver"]):
+            if not chain or chain[-1] != n:
+                chain.append(n)
+    lineage = " → ".join(f'<span class="hop">{html.escape(str(n))}</span>' for n in chain)
     if r["recipient"]:
-        lineage += f' → <span class="hop">{html.escape(r["recipient"])}</span>'
+        lineage += f' → <span class="hop">{html.escape(str(r["recipient"]))}</span>'
     if r["action"] == "block":
         lineage += ' <span class="x">✕ blocked</span>'
     st.markdown(
@@ -316,6 +351,7 @@ def _audit_log(records, sessions, subjects):
         "data_subject": r["data_subject"], "recipient": r["recipient"],
         "secrets_pii": next((v["label"] for v in r["verdicts"] if v["agent"] == "secrets_pii"), "—"),
         "authorization": next((v["label"] for v in r["verdicts"] if v["agent"] == "authorization"), "—"),
+        "subject_binding": next((v["label"] for v in r["verdicts"] if v["agent"] == "subject_binding"), "—"),
         "infoflow": next((v["label"] for v in r["verdicts"] if v["agent"] == "infoflow"), "—"),
         "decision": r["action"], "mode": "enforce" if r["enforced"] else "monitor",
     } for r in records
@@ -328,6 +364,11 @@ def _audit_log(records, sessions, subjects):
 # App                                                                          #
 # --------------------------------------------------------------------------- #
 def main():
+    if not _authenticated():
+        return
+    if not OPERATOR_TOKEN:
+        st.caption("⚠️ No operator token set (HARIS_DASHBOARD_TOKEN) — dashboard is open for "
+                   "local dev. Set the env var to require operator sign-in.")
     page, mode, include_secrets = _sidebar()
 
     if include_secrets and not _presidio_ok():

@@ -14,7 +14,6 @@ blocked ones) in a single pass.
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -24,10 +23,16 @@ from demo_app.hospital.app import (
 from haris.agents.authorization import AuthorizationAgent
 from haris.agents.infoflow import InformationFlowAgent
 from haris.agents.secrets_pii import SecretsPIIAgent
+from haris.audit import AuditLog, AuditRecord
 from haris.orchestrator.orchestrator import Orchestrator
 from haris.schemas.decision import HarisBlocked
 from haris.schemas.message import Message
 from haris.schemas.policy import Mode, Policy
+
+# Recipients not under this domain are treated as outside the trust boundary in the
+# interaction graph. Derived from the demo's internal address; a real deployment sets its
+# own. (The dashboard is otherwise app-agnostic — it renders whatever the audit log holds.)
+INTERNAL_DOMAIN = "@" + INTERNAL_DOCTOR.split("@", 1)[-1]  # "@hospital.internal"
 
 # --------------------------------------------------------------------------- #
 # Palette (mirrors the UI design tokens) so data + UI agree on meaning.        #
@@ -57,11 +62,13 @@ class Scenario:
 
 
 # The threat-model battery. patient-B on TC5 gives a second data_subject so the
-# subject filter has something to do.
+# subject filter has something to do; TC4 (leak="mixed-subject") stages the
+# data-subject case — a second patient's record entering the first patient's session.
 SCENARIOS: list[Scenario] = [
     Scenario("s-tc1", "TC1 · clean → internal", "patient-A", "clean", INTERNAL_DOCTOR),
     Scenario("s-tc2", "TC2 · verbatim → external", "patient-A", "verbatim", EXTERNAL_EXAMPLE),
     Scenario("s-tc3", "TC3 · derived → external", "patient-A", "identified", EXTERNAL_EXAMPLE),
+    Scenario("s-tc4", "TC4 · patient-B into patient-A's session", "patient-A", "mixed-subject", INTERNAL_DOCTOR),
     Scenario("s-tc5", "TC5 · derived → internal", "patient-B", "identified", INTERNAL_DOCTOR),
 ]
 
@@ -69,6 +76,7 @@ AGENT_LABELS = {
     "secrets_pii": "Secrets & PII Scanner",
     "infoflow": "Cross-Agent Info-Flow",
     "authorization": "Authorization Monitor",
+    "subject_binding": "Data-Subject Authorization",
 }
 
 
@@ -96,39 +104,54 @@ def _triggered_by(action: str, verdicts: list[dict]) -> str:
     return ", ".join(dict.fromkeys(who)) or "—"
 
 
-def _process_capture(orch: Orchestrator, msg: Message, scenario: Scenario,
-                     hop: int) -> dict[str, Any]:
-    """Run one hop through the orchestrator, capturing the Decision even on block."""
-    t0 = time.perf_counter()
+def _safe_process(orch: Orchestrator, msg: Message) -> None:
+    """Push one hop through Haris. The decision (including a block) is written to the
+    orchestrator's audit log inside process(); we swallow the enforce-mode raise so the
+    battery keeps running and the block is still on record."""
     try:
-        decision = orch.process(msg)
-    except HarisBlocked as exc:      # enforce-mode block: record it, don't halt
-        decision = exc.decision
-    latency_ms = (time.perf_counter() - t0) * 1000.0
+        orch.process(msg)
+    except HarisBlocked:
+        pass
 
-    verdicts = [_verdict_dict(v) for v in decision.verdicts]
-    action = decision.action.value
-    md = msg.metadata or {}
-    return {
-        "session": scenario.label,
-        "session_id": scenario.session_id,
-        "hop": hop,
-        "sender": msg.sender,
-        "receiver": msg.receiver,
-        "data_type": md.get("data_type"),
-        "data_subject": md.get("data_subject"),
-        "recipient": md.get("recipient"),
-        "action": action,
-        "enforced": bool(decision.enforced),
-        "verdicts": verdicts,
-        "triggered_by": _triggered_by(action, verdicts),
-        "reason": decision.reason,
-        "content": msg.content,
-        "final_content": decision.final_content if action == "redact" else msg.content,
-        "redacted": action == "redact",
-        "timestamp": msg.timestamp.strftime("%H:%M:%S.") + f"{msg.timestamp.microsecond // 1000:03d}",
-        "latency_ms": round(latency_ms, 1),
-    }
+
+def _fmt_ts(iso: str) -> str:
+    # "2026-07-22T14:23:01.123456" -> "14:23:01.123"
+    t = iso.split("T")[-1]
+    return t[:12] if "." in t else t[:8]
+
+
+def _display_records(audit: AuditLog) -> list[dict[str, Any]]:
+    """Turn the app-agnostic audit log into the display rows the UI renders. The audit
+    log is the single source of truth; this only adds presentation (friendly session
+    label, per-agent display names, and which check drove the action)."""
+    label_by_sid = {sc.session_id: sc.label for sc in SCENARIOS}
+    hop_counter: dict[str, int] = {}
+    rows: list[dict[str, Any]] = []
+    for rec in audit.records():
+        hop_counter[rec.session_id] = hop_counter.get(rec.session_id, 0) + 1
+        verdicts = [{**v, "agent_label": AGENT_LABELS.get(v["agent"], v["agent"])}
+                    for v in rec.verdicts]
+        rows.append({
+            "session": label_by_sid.get(rec.session_id, rec.session_id),
+            "session_id": rec.session_id,
+            "hop": hop_counter[rec.session_id],
+            "sender": rec.sender,
+            "receiver": rec.receiver,
+            "data_type": rec.data_type,
+            "data_subject": rec.data_subject,
+            "recipient": rec.recipient,
+            "action": rec.action,
+            "enforced": rec.enforced,
+            "verdicts": verdicts,
+            "triggered_by": _triggered_by(rec.action, verdicts),
+            "reason": rec.reason,
+            "final_content": rec.delivered_content or "",
+            "content_sha256": rec.content_sha256,
+            "redacted": rec.action == "redact",
+            "timestamp": _fmt_ts(rec.timestamp),
+            "latency_ms": round(rec.latency_ms, 1),
+        })
+    return rows
 
 
 def _build_agents(include_secrets: bool) -> list:
@@ -146,30 +169,49 @@ def presidio_available() -> bool:
         return False
 
 
-def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> list[dict]:
-    """Replay every scenario through one Orchestrator; return one record per hop."""
+def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> AuditLog:
+    """Replay every scenario through one Orchestrator wired to an AuditLog, and return
+    that log. Haris writes the log; the dashboard reads it — so the dashboard is a
+    consumer of Haris's audit trail, not of the hospital demo. Any app that runs through
+    an Orchestrator with an AuditLog produces the same, renderable, log."""
     from haris.state.graph_store import GraphStateStore
 
-    store = GraphStateStore()
-    orch = Orchestrator(store, agents=_build_agents(include_secrets),
-                        policy=Policy(mode=mode))
-    records: list[dict] = []
+    audit = AuditLog()
+    orch = Orchestrator(GraphStateStore(), agents=_build_agents(include_secrets),
+                        policy=Policy(mode=mode), audit_log=audit)
     for sc in SCENARIOS:
+        if sc.leak == "mixed-subject":
+            _emit_mixed_subject(orch, sc)
+            continue
         state: dict[str, Any] = {"subject": sc.subject, "leak": sc.leak,
                                  "recipient": sc.recipient}
         state.update(record_reader(state))   # -> state["record"] (PHI)
-        m1 = Message(session_id=sc.session_id, sender="record_reader",
-                     receiver="summarizer", content=state["record"],
-                     metadata={"data_type": "PHI", "data_subject": sc.subject})
-        records.append(_process_capture(orch, m1, sc, hop=1))
+        _safe_process(orch, Message(
+            session_id=sc.session_id, sender="record_reader", receiver="summarizer",
+            content=state["record"],
+            metadata={"data_type": "PHI", "data_subject": sc.subject}))
 
         state.update(summarizer(state))      # -> state["summary"]
-        m2 = Message(session_id=sc.session_id, sender="summarizer", receiver="emailer",
-                     content=state["summary"],
-                     metadata={"data_type": "summary", "recipient": sc.recipient,
-                               "data_subject": sc.subject})
-        records.append(_process_capture(orch, m2, sc, hop=2))
-    return records
+        _safe_process(orch, Message(
+            session_id=sc.session_id, sender="summarizer", receiver="emailer",
+            content=state["summary"],
+            metadata={"data_type": "summary", "recipient": sc.recipient,
+                      "data_subject": sc.subject}))
+    return audit
+
+
+def _emit_mixed_subject(orch: Orchestrator, sc: Scenario) -> None:
+    """TC4 — data-subject authorization: the session is about `sc.subject`; a SECOND
+    patient's record then tries to enter the same session and is blocked."""
+    other = "patient-B" if sc.subject == "patient-A" else "patient-A"
+    _safe_process(orch, Message(
+        session_id=sc.session_id, sender="record_reader", receiver="summarizer",
+        content=record_reader({"subject": sc.subject})["record"],
+        metadata={"data_type": "PHI", "data_subject": sc.subject}))     # binds the session
+    _safe_process(orch, Message(
+        session_id=sc.session_id, sender="record_reader", receiver="summarizer",
+        content=record_reader({"subject": other})["record"],
+        metadata={"data_type": "PHI", "data_subject": other}))          # blocked: wrong subject
 
 
 def compute_kpis(records: list[dict]) -> dict[str, Any]:
@@ -199,14 +241,15 @@ def compute_modules(records: list[dict]) -> list[dict]:
         return sum(1 for r in records for v in r["verdicts"]
                    if v["agent"] == agent and (label is None or v["label"] == label))
 
-    infoflow_blocked = sum(1 for r in records if r["action"] == "block")
     return [
         {"name": "Secrets & PII Scanner", "status": "ACTIVE", "accent": "flag",
-         "num": count("secrets_pii", "flag"), "unit": "caught this run"},
-        {"name": "Cross-Agent Info-Flow", "status": "ACTIVE", "accent": "block",
-         "num": infoflow_blocked, "unit": "leaks blocked"},
-        {"name": "Authorization Monitor", "status": "ACTIVE", "accent": "allow",
-         "num": count("authorization", "block"), "unit": "egress violations"},
+         "num": count("secrets_pii", "flag"), "unit": "PII/secrets flagged"},
+        {"name": "Cross-Agent Info-Flow", "status": "ACTIVE", "accent": "flag",
+         "num": count("infoflow", "flag"), "unit": "derived leaks caught"},
+        {"name": "Authorization Monitor", "status": "ACTIVE", "accent": "block",
+         "num": count("authorization", "block"), "unit": "egress blocks"},
+        {"name": "Data-Subject Authorization", "status": "ACTIVE", "accent": "block",
+         "num": count("subject_binding", "block"), "unit": "cross-subject blocks"},
         {"name": "Injection · Semantic", "status": "PLANNED", "accent": "muted",
          "num": None, "unit": "pluggable detectors · roadmap"},
     ]
@@ -232,32 +275,42 @@ def build_graph(records: list[dict]) -> dict[str, list[dict]]:
                           "data_type": data_type, "data_subject": subject,
                           "sensitive": sensitive, "label": extra_label}
 
-    roles = {"record_reader": ("Records", "patient DB", "source"),
-             "summarizer": ("Summarizer", "llm", "agent"),
-             "emailer": ("Emailer", "egress", "sink")}
+    # Generic, app-agnostic roles: a node that only sends is a source, only receives is a
+    # sink, and one that does both is an agent. No app-specific names are hardcoded, so
+    # this renders any protected multi-agent system, not just the hospital demo.
+    senders = {r["sender"] for r in records}
+    receivers = {r["receiver"] for r in records}
+    def role_of(nid: str) -> str:
+        sends, recvs = nid in senders, nid in receivers
+        if sends and not recvs:
+            return "source"
+        if recvs and not sends:
+            return "sink"
+        return "agent"
+
     for r in records:
         for nid in (r["sender"], r["receiver"]):
-            label, role, kind = roles.get(nid, (nid, "agent", "agent"))
-            add_node(nid, label, role, kind)
+            add_node(nid, nid, role_of(nid), role_of(nid))
         sensitive = r["data_type"] == "PHI" or any(
             v["agent"] == "infoflow" and v["label"] == "flag" for v in r["verdicts"])
         add_edge(r["sender"], r["receiver"], r["action"], r["data_type"],
                  r["data_subject"], sensitive)
-        # illustrative egress edge: emailer -> the actual recipient, colored by the
-        # summary hop's decision (that hop is where the recipient is authorized).
-        if r["receiver"] == "emailer" and r["recipient"]:
+        # Any hop that carries a recipient gets an egress edge to that endpoint, colored by
+        # the hop's decision. External vs internal is by the configured trust-boundary domain.
+        if r["recipient"]:
             rcpt = r["recipient"]
-            external = not rcpt.endswith("@hospital.internal")
-            add_node(rcpt, rcpt, "external" if external else "internal",
-                     "external" if external else "internal")
-            add_edge("emailer", rcpt, r["action"], r["data_type"],
+            external = not str(rcpt).endswith(INTERNAL_DOMAIN)
+            kind = "external" if external else "internal"
+            add_node(rcpt, rcpt, kind, kind)
+            add_edge(r["receiver"], rcpt, r["action"], r["data_type"],
                      r["data_subject"], sensitive)
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
 def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> dict[str, Any]:
-    """Everything the dashboard needs, in one call."""
-    records = run_battery(mode=mode, include_secrets=include_secrets)
+    """Everything the dashboard needs, in one call. Reads from Haris's audit log."""
+    audit = run_battery(mode=mode, include_secrets=include_secrets)
+    records = _display_records(audit)
     return {
         "mode": mode.value,
         "records": records,
