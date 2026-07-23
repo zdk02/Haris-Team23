@@ -76,7 +76,9 @@ def test_redactions_compose_in_agent_order():
     _, haris = _haris(agents, policy)
     delivered, decision = haris.intercept("s1", "a", "b", "NAME and SSN")
     assert decision.action is Action.REDACT
-    assert delivered == "[X] and [Y]"
+    # The engine unions both agents' masked spans and standardizes them to [REDACTED]
+    # (pii masks NAME; infoflow masks NAME + SSN) -- no last-writer-wins clobbering.
+    assert delivered == "[REDACTED] and [REDACTED]"
 
 
 def test_block_beats_redact():
