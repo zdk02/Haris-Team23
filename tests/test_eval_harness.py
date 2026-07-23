@@ -19,4 +19,4 @@ def test_metrics_and_audit_are_well_formed():
     assert r["messages_measured"] > 0
     assert r["latency_avg_ms"] >= 0.0 and r["latency_p95_ms"] >= 0.0
     assert r["audit_chain_intact"] is True          # the eval run is itself auditable
-    assert r["tp"] + r["fn"] == 4 and r["fp"] + r["tn"] == 4
+    assert r["tp"] + r["fn"] == 5 and r["fp"] + r["tn"] == 4   # 5 staged attacks, 4 benign
