@@ -1,6 +1,8 @@
 """Security audit log: Haris records every decision, app-agnostically, hashing content."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from haris.agents.base import SecurityAgent
@@ -68,3 +70,49 @@ def test_records_returns_an_append_only_snapshot():
 def test_orchestrator_without_audit_log_is_unaffected():
     d = Orchestrator(InMemoryStateStore(), agents=[]).process(_msg())
     assert d.action.value == "allow"
+
+
+# ---- tamper-evidence: the hash chain (append-only in effect) -----------------
+
+def test_hash_chain_links_records_and_verifies():
+    log = AuditLog()
+    orch = _orch(log)
+    for _ in range(3):
+        orch.process(_msg())
+    recs = log.records()
+    assert recs[0].prev_hash == ""                      # genesis
+    assert recs[1].prev_hash == recs[0].entry_hash      # each links to the previous
+    assert recs[2].prev_hash == recs[1].entry_hash
+    assert log.verify_chain() is True
+
+
+def test_editing_a_past_record_breaks_the_chain():
+    log = AuditLog()
+    orch = _orch(log)
+    orch.process(_msg("one"))
+    orch.process(_msg("two"))
+    assert log.verify_chain() is True
+    log._records[0] = replace(log._records[0], action="allow-tampered")   # attacker edit
+    assert log.verify_chain() is False
+
+
+def test_deleting_a_record_breaks_the_chain():
+    log = AuditLog()
+    orch = _orch(log)
+    for _ in range(3):
+        orch.process(_msg())
+    del log._records[1]                                  # drop the middle record
+    assert log.verify_chain() is False
+
+
+def test_jsonl_persistence_roundtrips_and_verifies(tmp_path):
+    path = str(tmp_path / "audit.jsonl")
+    log = AuditLog(store_delivered_content=False, path=path)   # hardened: hashes only
+    orch = _orch(log)
+    orch.process(_msg("alpha", data_type="PHI"))
+    orch.process(_msg("beta"))
+    loaded = AuditLog.load_jsonl(path)
+    assert len(loaded) == 2
+    assert loaded.verify_chain() is True                # the file wasn't tampered with
+    disk = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert '"delivered_content": null' in disk          # no raw bodies persisted
