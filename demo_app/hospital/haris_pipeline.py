@@ -37,6 +37,9 @@ from haris.schemas.decision import HarisBlocked
 from haris.schemas.policy import Mode, Policy
 from haris.state.graph_store import GraphStateStore
 from haris.state.memory import InMemoryStateStore
+from haris.notify import Notifier
+from haris.notify.health import HealthCheck, agents_present_probe, state_store_probe
+from haris.notify.channels import WebhookChannel
 
 
 def build_haris_graph(orchestrator: Orchestrator):
@@ -134,8 +137,18 @@ def run_secured(
     store = GraphStateStore()
     policy = Policy(mode=mode, thresholds=thresholds or {})
     agent_list = agents if agents is not None else build_hospital_agents(include_secrets)
-    orchestrator = Orchestrator(state_store=store, agents=agent_list, policy=policy)
+
+    # Phase 4: notifier first, so the orchestrator can push crash/block alerts through it.
+    notifier = Notifier(channels=[WebhookChannel()])
+    orchestrator = Orchestrator(state_store=store, agents=agent_list, policy=policy,
+                                notifier=notifier)
     graph, haris = build_haris_graph(orchestrator)
+
+    # Health check that notifies + drives fail-closed (task 4).
+    health = HealthCheck(notifier=notifier)
+    health.register("agents", agents_present_probe(orchestrator))
+    health.register("state_store", state_store_probe(store))
+    health.assert_serviceable(policy.mode)
 
     final: Optional[dict] = None
     blocked = False

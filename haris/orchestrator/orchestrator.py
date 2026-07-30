@@ -18,15 +18,18 @@ another's result.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any, Optional
 
 from haris.agents.base import SecurityAgent
 from haris.audit import AuditLog
+from haris.notify.notifier import Notifier
 from haris.policy.engine import resolve
 from haris.schemas.decision import Action, Decision, HarisBlocked
 from haris.schemas.message import Message
+from haris.schemas.notification import NotificationEvent
 from haris.schemas.policy import Mode, Policy
 from haris.schemas.verdict import Label, Verdict
 from haris.state.base import StateStore
@@ -41,6 +44,7 @@ class Orchestrator:
         agents: Optional[list[SecurityAgent]] = None,
         policy: Optional[Policy] = None,
         audit_log: Optional[AuditLog] = None,
+        notifier: Optional[Notifier] = None,
     ) -> None:
         self.state_store = state_store
         self.agents = agents or []          # ZERO agents in the skeleton
@@ -49,6 +53,11 @@ class Orchestrator:
         # (including blocked ones) is appended before enforcement raises — the audit
         # trail must record the block. Any app running through Haris populates it.
         self.audit_log = audit_log
+        # Optional notifier. When set, the runtime triggers below push an alert to a human:
+        # a detector crash / fail-closed (OPERATIONAL, CRITICAL) and a blocked leak
+        # (SECURITY, WARNING). When None, Haris behaves exactly as before — notifications
+        # are purely additive and never change a decision.
+        self.notifier = notifier
 
     def process(self, message: Message) -> Decision:
         self.state_store.record_flow(message)
@@ -72,6 +81,26 @@ class Orchestrator:
 
         if self.audit_log is not None:
             self.audit_log.record(message, decision, latency_ms)
+
+        # TRIGGER T4 — a leak was blocked at egress: a security event a human should review.
+        # The engine only yields action == BLOCK in enforce mode (monitor clamps BLOCK to
+        # FLAG in policy/engine._apply_mode), so this fires exactly when a message was really
+        # stopped. The summary is SANITIZED — only sender/receiver/data_type, never the
+        # content or the raw agent reason (that goes in metadata, which the Notifier strips
+        # before any channel). The reference is the content hash, the same pointer the audit
+        # log stores, so an operator can find the full record without the secret in the alert.
+        if self.notifier is not None and decision.action is Action.BLOCK:
+            md = message.metadata or {}
+            self.notifier.notify(NotificationEvent.security(
+                "orchestrator",
+                f"Haris blocked a {md.get('data_type') or 'message'} flow "
+                f"{message.sender} -> {message.receiver}",
+                reference=hashlib.sha256((message.content or "").encode("utf-8")).hexdigest(),
+                session_id=message.session_id,
+                reason=decision.reason,
+                enforced=decision.enforced,
+                recipient=md.get("recipient"),
+            ))
 
         # MONITOR mode: pass through unchanged no matter what.
         if decision.enforced and decision.action is Action.BLOCK:
@@ -99,6 +128,21 @@ class Orchestrator:
                 "CLOSED (block)" if fail_closed else "OPEN (allow, monitor)",
                 type(exc).__name__, exc,
             )
+            # TRIGGERS T1/T2 — a detector crashed. This is exactly the mentor's "if something
+            # goes wrong, how do we know?": the guard already contains the crash, and now it
+            # also pushes a CRITICAL alert so a human is told a detector is down (and, in
+            # enforce, that we're failing closed). The error type goes in metadata (kept for
+            # the log, stripped before any channel); the summary carries no message content.
+            if self.notifier is not None:
+                self.notifier.notify(NotificationEvent.operational(
+                    "orchestrator",
+                    f"detector {name!r} crashed on {message.sender} -> {message.receiver}; "
+                    f"failing {'CLOSED (block)' if fail_closed else 'OPEN (allow, monitor)'}",
+                    session_id=message.session_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    mode=self.policy.mode.value,
+                ))
             if fail_closed:
                 return Verdict(
                     agent_name=name, label=Label.BLOCK, score=1.0,
