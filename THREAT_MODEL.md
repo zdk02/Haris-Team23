@@ -56,9 +56,18 @@ every message, so a breach of Haris is worse than any single leak. We therefore:
 - **treat inspected content as untrusted** — Haris's checks are deterministic detectors, not
   an LLM being fed the content as instructions, so a message can't prompt-inject Haris;
 - **gate who can read the audit log** — the dashboard requires an operator token.
+- **surface failures and security events actively** — a detector crash, a fail-closed event,
+  a blocked leak, or a health-check failure raises a *notification* (operational log +
+  dashboard banner + Slack/Discord webhook), so a broken guard or a caught leak reaches a
+  human instead of sitting silently in a log. This answers the mentor's "if something breaks,
+  how do we know?": a health check that nobody acts on is theater, so ours both alerts *and*
+  drives fail-closed. Alerts carry a content *reference* (hash) and sanitized text, never the
+  secret — the alert channel can't itself become the leak. Staged and tested in
+  `demo_app/hospital/notify_demo.py` and `tests/test_notify.py`; designed in `NOTIFICATIONS.md`.
 
 **Deployment-era (not yet).** Running Haris as its own isolated service with least-privilege
-IAM, real operator identity (SSO), and cryptographic signing / a WORM audit store.
+IAM, real operator identity (SSO), cryptographic signing / a WORM audit store, and real
+alert *delivery* (e.g. email/SES) beyond the webhook.
 
 **Out of scope by design.** Network/server attacks and anyone with direct machine access.
 
