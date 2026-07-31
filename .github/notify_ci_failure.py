@@ -31,5 +31,10 @@ summary = (f"Integration tests FAILED on '{ref}' — commit {sha} by @{actor}. "
            f"Details: {run_url}")
 
 # send() posts regardless of severity; it is a no-op when no webhook URL is configured.
-WebhookChannel().send(NotificationEvent.operational("ci", summary, severity=Severity.CRITICAL))
-print("CI failure notification sent (or skipped if no webhook configured).")
+# Best-effort: a webhook hiccup must not add a confusing traceback to an already-red build,
+# so we contain it and print the outcome instead of letting the step crash.
+try:
+    WebhookChannel().send(NotificationEvent.operational("ci", summary, severity=Severity.CRITICAL))
+    print("CI failure notification sent (or skipped if no webhook configured).")
+except Exception as exc:  # noqa: BLE001
+    print(f"CI failure notification could not be delivered: {type(exc).__name__}: {exc}")

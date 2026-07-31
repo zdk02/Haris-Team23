@@ -76,7 +76,14 @@ class WebhookChannel(Channel):
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.url, data=data,
-            headers={"Content-Type": "application/json"}, method="POST")
+            headers={
+                "Content-Type": "application/json",
+                # Discord sits behind Cloudflare, which returns 403 Forbidden to requests
+                # carrying urllib's default "Python-urllib/x.y" User-Agent. Send an explicit
+                # one so the POST is accepted. (Slack and generic receivers accept it too.)
+                "User-Agent": "Haris-Notifier/1.0 (+https://github.com/zdk02/Haris-Team23)",
+            },
+            method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 status = getattr(resp, "status", None) or resp.getcode()
