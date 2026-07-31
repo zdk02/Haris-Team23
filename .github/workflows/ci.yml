@@ -1,0 +1,52 @@
+name: CI
+
+# Run the whole test suite automatically on every push and pull request. This is the
+# "integration testing before deployment" the mentor asked for, made automatic: nobody
+# has to remember to run the tests — a red build is caught the moment code lands.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Presidio (the Secrets/PII agent) needs a spaCy model; install it so the FULL
+          # suite runs in CI instead of skipping those tests.
+          python -m spacy download en_core_web_sm
+
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+      # WHO IS NOTIFIED WHEN INTEGRATION TESTING FAILS (the mentor's question):
+      #   1. GitHub automatically emails the person whose push/PR triggered this run — that
+      #      is built in, no configuration needed.
+      #   2. This step also posts the failure to the team channel, so the whole team sees it,
+      #      not just the author. It reuses Haris's own WebhookChannel, so the Slack/Discord
+      #      formatting matches the runtime alerts. If the HARIS_ALERT_WEBHOOK repo secret is
+      #      not set, the post is a silent no-op and never fails the job.
+      #   3. CODEOWNERS (.github/CODEOWNERS) defines who owns which part of the tree, so it is
+      #      written down whose job it is to fix a red build.
+      - name: Notify team channel on failure
+        if: failure()
+        env:
+          HARIS_ALERT_WEBHOOK: ${{ secrets.HARIS_ALERT_WEBHOOK }}
+          CI_REF: ${{ github.ref_name }}
+          CI_SHA: ${{ github.sha }}
+          CI_ACTOR: ${{ github.actor }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python .github/notify_ci_failure.py

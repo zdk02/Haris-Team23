@@ -1,0 +1,25 @@
+# CODEOWNERS — who is responsible for which part of Haris.
+#
+# This is the written answer to the mentor's "who is responsible when something fails?".
+# GitHub uses it to auto-request a review from the listed owner on any pull request that
+# touches a matching path, and a red build in an area points at a named owner rather than
+# "someone should look at it".
+#
+# Syntax:  <path-pattern>   <@owner> [@more-owners]
+# NOTE: replace @TEAMMATE_GITHUB_HANDLE below with your teammate's real GitHub username
+#       (CODEOWNERS entries must be real GitHub accounts to take effect).
+
+# Default owners for anything not matched by a more specific rule below.
+*                        @zdk02 @TEAMMATE_GITHUB_HANDLE
+
+# The Phase 4 notification system.
+/haris/notify/           @zdk02 @TEAMMATE_GITHUB_HANDLE
+/NOTIFICATIONS.md        @zdk02 @TEAMMATE_GITHUB_HANDLE
+
+# CI and repo automation.
+/.github/                @zdk02 @TEAMMATE_GITHUB_HANDLE
+
+# The security agents and the policy/orchestrator core.
+/haris/agents/           @zdk02 @TEAMMATE_GITHUB_HANDLE
+/haris/orchestrator/     @zdk02 @TEAMMATE_GITHUB_HANDLE
+/haris/policy/           @zdk02 @TEAMMATE_GITHUB_HANDLE
