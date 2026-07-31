@@ -169,7 +169,8 @@ def presidio_available() -> bool:
         return False
 
 
-def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> AuditLog:
+def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True,
+                notifier=None) -> AuditLog:
     """Replay every scenario through one Orchestrator wired to an AuditLog, and return
     that log. Haris writes the log; the dashboard reads it — so the dashboard is a
     consumer of Haris's audit trail, not of the hospital demo. Any app that runs through
@@ -178,14 +179,19 @@ def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> Audi
     A warm-up pass (discarded) runs first so the one-time detector/model init cost
     (Presidio/spaCy loads lazily on first use) is paid up front. The MEASURED latency in
     the returned audit log then reflects steady-state per-hop overhead — the honest
-    'how much delay does Haris add per message' number — not the cold-start model load."""
+    'how much delay does Haris add per message' number — not the cold-start model load.
+
+    If a `notifier` is passed, it is wired into the MEASURED pass only (not the warm-up, so
+    alerts aren't double-counted). Every block then also emits a notification event, which
+    the dashboard's alert banner reads — the same 'Haris produces it, the dashboard renders
+    it' split we use for the audit log."""
     from haris.state.graph_store import GraphStateStore
 
     agents = _build_agents(include_secrets)
     _play(Orchestrator(GraphStateStore(), agents=agents, policy=Policy(mode=mode)))  # warm-up
     audit = AuditLog()
     _play(Orchestrator(GraphStateStore(), agents=agents, policy=Policy(mode=mode),
-                       audit_log=audit))                                            # measured
+                       audit_log=audit, notifier=notifier))                         # measured
     return audit
 
 
@@ -321,9 +327,29 @@ def build_graph(records: list[dict]) -> dict[str, list[dict]]:
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
+def _incident_dict(event) -> dict[str, Any]:
+    """A NotificationEvent -> the display fields the alert banner renders. Only the
+    sanitized whitelist fields (no metadata), so nothing sensitive reaches the UI."""
+    return {
+        "severity": event.severity.value,
+        "category": event.category.value,
+        "source": event.source,
+        "summary": event.summary,
+        "session_id": event.session_id,
+        "timestamp": _fmt_ts(event.timestamp),
+    }
+
+
 def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> dict[str, Any]:
-    """Everything the dashboard needs, in one call. Reads from Haris's audit log."""
-    audit = run_battery(mode=mode, include_secrets=include_secrets)
+    """Everything the dashboard needs, in one call. Reads from Haris's audit log, and
+    collects the run's notification events (blocked leaks, any detector crash) into a
+    buffer the alert banner renders."""
+    from haris.notify import Notifier
+    from haris.notify.channels import BufferChannel
+
+    incidents_buffer = BufferChannel()
+    notifier = Notifier(channels=[incidents_buffer])
+    audit = run_battery(mode=mode, include_secrets=include_secrets, notifier=notifier)
     records = _display_records(audit)
     return {
         "mode": mode.value,
@@ -333,4 +359,5 @@ def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> di
         "graph": build_graph(records),
         "sessions": [sc.label for sc in SCENARIOS],
         "subjects": sorted({r["data_subject"] for r in records if r["data_subject"]}),
+        "incidents": [_incident_dict(e) for e in incidents_buffer.events()],
     }

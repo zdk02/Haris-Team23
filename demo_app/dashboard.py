@@ -113,6 +113,21 @@ div[data-testid="stVerticalBlock"] .stButton>button:hover{ background:var(--surf
 .legend .item{ display:flex; align-items:center; gap:7px; }
 .legend .sw{ width:16px; height:3px; border-radius:2px; display:inline-block; }
 .legend .sw.dash{ background:repeating-linear-gradient(90deg,var(--sensitive) 0 5px, transparent 5px 9px); }
+/* --- notification / alert banner (Phase 4) --- */
+.alertbar{ border-radius:12px; padding:12px 16px; margin:2px 0 14px; border:1px solid; }
+.alertbar.crit{ background:var(--block-dim); border-color:rgba(255,92,114,.4); }
+.alertbar.warn{ background:var(--flag-dim); border-color:rgba(245,184,81,.35); }
+.alertbar.ok{ background:var(--allow-dim); border-color:rgba(53,214,164,.3); }
+.alertbar .ab-head{ display:flex; align-items:center; gap:10px; font-family:var(--f-display);
+  font-weight:600; font-size:14px; }
+.alertbar.crit .ab-head{ color:var(--block); } .alertbar.warn .ab-head{ color:var(--flag); }
+.alertbar.ok .ab-head{ color:var(--allow); }
+.alertbar .ab-list{ margin-top:9px; display:flex; flex-direction:column; gap:5px; }
+.alertbar .ab-item{ font-family:var(--f-mono); font-size:12px; color:var(--text-mut);
+  display:flex; align-items:baseline; gap:9px; }
+.alertbar .ab-item .sev{ font-weight:600; }
+.alertbar .ab-item .sev.critical{ color:var(--block); } .alertbar .ab-item .sev.warning{ color:var(--flag); }
+.alertbar .ab-item .ts{ color:var(--text-dim); margin-left:auto; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -200,6 +215,37 @@ def _topbar(mode, scenario):
         f'<span class="pill">mode · {mode.value}</span>'
         '<span class="pill live"><span class="pulse"></span>LIVE</span></div>',
         unsafe_allow_html=True)
+
+
+def _alert_banner(incidents):
+    """Phase 4 — the always-on operator view of the notification system. Renders whatever
+    alerts Haris raised this run (blocked leaks = WARNING, a detector crash / Haris-down =
+    CRITICAL). Reads the sanitized incident feed from the data layer, so no message content
+    ever reaches the banner."""
+    crit = [i for i in incidents if i["severity"] == "critical"]
+    warn = [i for i in incidents if i["severity"] == "warning"]
+    if not incidents:
+        st.markdown(
+            '<div class="alertbar ok"><div class="ab-head">✓ &nbsp;All systems healthy '
+            '— no security incidents this run.</div></div>', unsafe_allow_html=True)
+        return
+    level = "crit" if crit else "warn"
+    icon = "⛔" if crit else "⚠️"
+    parts = []
+    if crit:
+        parts.append(f"{len(crit)} critical")
+    if warn:
+        parts.append(f"{len(warn)} security alert" + ("s" if len(warn) != 1 else ""))
+    head = f"{icon} &nbsp;{' · '.join(parts)} this run"
+    items = "".join(
+        f'<div class="ab-item"><span class="sev {i["severity"]}">{i["severity"].upper()}</span>'
+        f'<span>{html.escape(i["summary"])}</span>'
+        f'<span class="ts">{i["timestamp"]}</span></div>'
+        for i in incidents[:6])
+    more = (f'<div class="ab-item"><span class="ts" style="margin-left:0">'
+            f'+{len(incidents) - 6} more…</span></div>' if len(incidents) > 6 else "")
+    st.markdown(f'<div class="alertbar {level}"><div class="ab-head">{head}</div>'
+                f'<div class="ab-list">{items}{more}</div></div>', unsafe_allow_html=True)
 
 
 def _kpis(k):
@@ -393,6 +439,7 @@ def main():
     st.session_state.setdefault("sel", 0)
 
     _topbar(mode, scenario)
+    _alert_banner(data.get("incidents", []))
 
     if page == "Overview":
         _kpis(kpis)
