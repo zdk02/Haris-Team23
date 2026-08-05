@@ -49,7 +49,8 @@ TOPOLOGIES = ("chain", "star", "branch")
 # Attack families and the benign families, kept explicit so metrics can break down by it.
 ATTACK_FAMILIES = (
     "external_verbatim", "external_derived", "external_paraphrase",
-    "external_credential", "policy_egress", "subject_mismatch", "spoof",
+    "external_obfuscated", "external_credential", "policy_egress",
+    "subject_mismatch", "spoof",
 )
 BENIGN_FAMILIES = (
     "internal_derived", "internal_clean", "near_miss_benign",
@@ -145,6 +146,12 @@ def _content(style: str, s: Secret) -> str:
     return "Routine administrative note: schedule confirmed, nothing sensitive."
 
 
+def _obfuscate(s: str) -> str:
+    """Trivial reformatting (a hard attack): defeats exact-match taint but not the oracle's
+    normalized matching, so the leak is real yet Haris's coarse detector misses it."""
+    return s.replace("-", " - ")
+
+
 # --------------------------------------------------------------------------- #
 # Message builders
 # --------------------------------------------------------------------------- #
@@ -211,6 +218,21 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
     if family == "external_paraphrase":
         return scn(_flow(domain, sid, secret, topology, style="paraphrase",
                          egress_type="note", recipient=ext), True, "paraphrase", True)
+    if family == "external_obfuscated":
+        # hard attack: leak a reformatted identifier that exact-match taint misses.
+        # ~half also slip the exact name (Haris still catches those) -> partial detection.
+        fully_hard = fake.boolean()
+        content = f"Ref {_obfuscate(secret.record_id)} — please proceed with the case."
+        if not fully_hard:
+            content += f" Re: {secret.name}."
+        roles = domain.roles
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": secret.subject}),
+            _msg(domain, sid, roles[1], roles[-1], content,
+                 {"data_type": "note", "data_subject": secret.subject, "recipient": ext}),
+        ]
+        return scn(msgs, True, "obfuscated", True)
     if family == "external_credential":
         return scn(_flow(domain, sid, secret, topology, style="credential",
                          egress_type="note", recipient=ext), True, "credential", True)
