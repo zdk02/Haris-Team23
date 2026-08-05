@@ -1,0 +1,10 @@
+# Keep the build context small and the image clean — don't copy local/dev cruft in.
+.git
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+eval_results.json
+presidio_on.json
+*.egg-info/

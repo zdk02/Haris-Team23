@@ -1,0 +1,18 @@
+# Haris — one-command bring-up of the operator dashboard (plan Step 15).
+#
+#   docker compose up --build      # builds the image and serves the dashboard on :8501
+#
+# `dashboard` is the operator view (the reachable URL). The structure leaves room to add a
+# separate `haris` service later (plan Step 22) that this dashboard would read from.
+
+services:
+  dashboard:
+    build: .
+    image: haris
+    ports:
+      - "8501:8501"
+    # Values come from a local .env file (copy .env.example -> .env). Both are optional:
+    # with no token the dashboard runs open for local dev; with no webhook, alerts no-op.
+    env_file:
+      - .env
+    restart: unless-stopped

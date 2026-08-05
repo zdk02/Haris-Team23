@@ -4,9 +4,11 @@ presidio-anonymizer
 detect-secrets
 # Module 7 (secrets_pii) needs a spaCy model for Presidio; after pip install run:
 #   python -m spacy download en_core_web_sm
+# (spaCy itself is pulled in by presidio-analyzer, so it isn't listed separately.)
 networkx
 pydantic
 streamlit
 streamlit-agraph
+pandas
 pytest
 faker
