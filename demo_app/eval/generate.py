@@ -33,9 +33,10 @@ Quick check:  python -m demo_app.eval.generate
 """
 from __future__ import annotations
 
-import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
+
+from faker import Faker
 
 from haris.schemas.message import Message
 
@@ -60,8 +61,6 @@ _ID_LABEL = {
     "PHI": "MRN", "student_record": "STU-ID",
     "account_data": "ACCT", "candidate_pii": "EMP-ID",
 }
-_NAMES = ("Dana Khoury", "Omar Haddad", "Lina Saab", "Karim Nassar",
-          "Maya Fares", "Rami Aoun", "Sara Wehbe", "Nabil Rahme")
 _FACTS = ("type 2 diabetes", "a restructured mortgage", "a failed probation review",
           "a repeat course enrollment", "an overdue balance", "a flagged lab result")
 
@@ -114,13 +113,14 @@ class Scenario:
 # Secret + content builders
 # --------------------------------------------------------------------------- #
 
-def _make_secret(domain: Domain, subject: str, rng: random.Random, with_credential: bool) -> Secret:
-    name = rng.choice(_NAMES)
+def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: bool) -> Secret:
+    # Faker (seeded) -> synthetic-but-realistic values, following the source paper's method.
+    name = fake.name()
     id_label = _ID_LABEL.get(domain.source_type, "REC")
-    record_id = f"{id_label}-{rng.randint(1000, 9999)}"
-    fact = rng.choice(_FACTS)
-    credential = "AKIA" + "".join(rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-                                  for _ in range(16))
+    record_id = f"{id_label}-{fake.numerify('####')}"
+    fact = fake.random_element(_FACTS)
+    credential = "AKIA" + fake.bothify("????????????????",
+                                       letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
     # Structured "Key: value" record — the info-flow structured extractor tags the
     # bracketed subject and each value, so exact reuse downstream resurfaces as taint.
     lines = [f"[{subject}]", f"Name: {name}", f"{id_label}: {record_id}", f"Detail: {fact}"]
@@ -186,8 +186,8 @@ def _flow(domain: Domain, sid: str, secret: Secret, topology: str,
 # --------------------------------------------------------------------------- #
 
 def _build_family(domain: Domain, sid: str, family: str, topology: str,
-                  rng: random.Random) -> Optional[Scenario]:
-    subj = domain.subjects[rng.randrange(len(domain.subjects))]
+                  fake: Faker) -> Optional[Scenario]:
+    subj = fake.random_element(domain.subjects)
     partner = f"partner@trusted-{domain.name}.org"   # external but AUTHORIZED
     ext = domain.external_recipient
     internal = domain.internal_recipient
@@ -199,7 +199,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                         messages=msgs, authorized_recipients=auth or authorized, secret=secret)
 
     # credential family needs the credential baked into the source record
-    secret = _make_secret(domain, subj, rng, with_credential=(family == "external_credential"))
+    secret = _make_secret(domain, subj, fake, with_credential=(family == "external_credential"))
 
     # ---- attacks ----
     if family == "external_verbatim":
@@ -220,7 +220,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                          egress_type="summary", recipient=ext), True, "derived", True)
     if family == "subject_mismatch":
         other = next(x for x in domain.subjects if x != subj)
-        s2 = _make_secret(domain, other, rng, with_credential=False)
+        s2 = _make_secret(domain, other, fake, with_credential=False)
         msgs = [
             _msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                  {"data_type": domain.source_type, "data_subject": subj}),
@@ -272,7 +272,8 @@ def generate(variants: int = 2) -> list[Scenario]:
     `variants` repeats each combination with a different drawn secret/subject to add
     volume without losing reproducibility (the RNG is seeded).
     """
-    rng = random.Random(SEED)
+    fake = Faker()
+    fake.seed_instance(SEED)   # deterministic: same seed -> same scenarios every run
     families = ATTACK_FAMILIES + BENIGN_FAMILIES
     out: list[Scenario] = []
     n = 0
@@ -281,7 +282,7 @@ def generate(variants: int = 2) -> list[Scenario]:
             for family in families:
                 for _ in range(variants):
                     sid = f"{domain.name}-{topology}-{family}-{n}"
-                    scenario = _build_family(domain, sid, family, topology, rng)
+                    scenario = _build_family(domain, sid, family, topology, fake)
                     if scenario is not None:
                         out.append(scenario)
                     n += 1
