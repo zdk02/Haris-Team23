@@ -49,10 +49,12 @@ def summarize(records: list[dict]) -> dict:
         "detection_rate": round(_rate(attacks, "detected"), 4),
         "leak_prevention_rate": round(_rate(attacks, "stopped"), 4),
         "false_positive_rate": round(_rate(benign, "stopped"), 4),
+        "utility_rate": round(1 - _rate(benign, "stopped"), 4),
         "latency_avg_ms": round(sum(lat) / len(lat), 4) if lat else 0.0,
         "latency_p95_ms": round(lat[min(len(lat) - 1, int(0.95 * len(lat)))], 4) if lat else 0.0,
         "by_leak_style": group("leak_style"),
         "by_domain": group("domain"),
+        "by_topology": group("topology"),
         "by_family": group("family"),
     }
 

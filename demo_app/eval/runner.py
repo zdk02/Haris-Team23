@@ -108,6 +108,7 @@ def report(records: list[dict]) -> None:
     print(f"  detection     : {_pct(_rate(attacks, 'detected'))}  (monitor arm)")
     print(f"  false positive: {_pct(_rate(benign, 'stopped'))}  "
           f"({sum(1 for r in benign if r['stopped'])}/{len(benign)} benign wrongly stopped)")
+    print(f"  utility       : {_pct(1 - _rate(benign, 'stopped'))}  (benign traffic delivered unharmed)")
     if all_lat:
         p95 = all_lat[min(len(all_lat) - 1, int(0.95 * len(all_lat)))]
         print(f"  latency/hop   : {sum(all_lat)/len(all_lat):.2f} ms avg · {p95:.2f} ms p95")
@@ -128,6 +129,8 @@ def report(records: list[dict]) -> None:
 
     breakdown("BY LEAK STYLE  (paraphrase = the honest gap)", "leak_style", records)
     breakdown("BY DOMAIN  (consistency = generalization)", "domain", records)
+    breakdown("BY TOPOLOGY  (near-flat by design: Haris judges each hop independently)",
+              "topology", records)
     breakdown("BY FAMILY", "family", records)
 
 
