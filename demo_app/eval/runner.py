@@ -56,6 +56,17 @@ def _run_arm(scn: Scenario, agents: list, mode: Mode, want_latency: bool = False
     return stopped, detected, latencies
 
 
+# Difficulty gradient for the data-exfiltration threat — how hard the attacker works to
+# hide the leaked identifier. This turns the (otherwise binary) per-class result into a
+# graceful degradation curve: easy -> medium -> hard.
+_DIFFICULTY = {
+    "external_verbatim": "easy",     # full record copied (exact token present)
+    "external_derived": "easy",      # exact identifier reused
+    "external_obfuscated": "medium", # identifier trivially reformatted
+    "external_paraphrase": "hard",   # identifier semantically reworded (no literal token)
+}
+
+
 def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     agents = build_agents(DOMAINS[scn.domain], include_secrets)
     oracle_attack, _ = oracle_should_stop(scn)
@@ -65,6 +76,7 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     return {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
+        "difficulty": _DIFFICULTY.get(scn.family),   # None for non-exfiltration threats
         "oracle_attack": oracle_attack,
         "baseline_stopped": none_stopped, "detected": detected, "stopped": stopped,
         "latencies": lat,
@@ -131,6 +143,22 @@ def report(records: list[dict]) -> None:
     breakdown("BY DOMAIN  (consistency = generalization)", "domain", records)
     breakdown("BY TOPOLOGY  (near-flat by design: Haris judges each hop independently)",
               "topology", records)
+
+    # Difficulty gradient: detection degrades gracefully as the attacker hides the leak.
+    diff = [r for r in records if r.get("difficulty")]
+    if diff:
+        print("\nBY DIFFICULTY  (data-exfiltration: how hard the attacker hides the leak)")
+        by = defaultdict(list)
+        for r in diff:
+            by[r["difficulty"]].append(r)
+        for level in ("easy", "medium", "hard"):
+            rs = by.get(level, [])
+            if not rs:
+                continue
+            det = _pct(_rate(rs, "detected"))
+            prev = _pct(_rate(rs, "stopped"))
+            print(f"  {level:<8} detect={det:<5} prevent={prev:<5} (n={len(rs)})")
+
     breakdown("BY FAMILY", "family", records)
 
 

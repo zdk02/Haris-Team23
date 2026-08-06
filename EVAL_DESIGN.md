@@ -92,9 +92,19 @@ construction.
 
 ## Metrics (`runner.py` + `simulate.py` JSON export)
 
-Overall and broken down by **leak-style / domain / topology / family**: leak-prevention (enforce),
-detection (monitor), false-positive (benign wrongly stopped), utility (benign delivered unharmed),
-latency (avg + p95 per hop).
+Overall and broken down by **leak-style / domain / topology / difficulty / family**:
+leak-prevention (enforce), detection (monitor), false-positive (benign wrongly stopped),
+utility (benign delivered unharmed), latency (avg + p95 per hop).
+
+**Difficulty gradient (data-exfiltration threat).** A derived axis over the exfiltration
+attacks showing how detection degrades as the attacker hides the leaked identifier —
+**easy** (`external_verbatim`, `external_derived`: exact token present) →
+**medium** (`external_obfuscated`: identifier trivially reformatted) →
+**hard** (`external_paraphrase`: semantically reworded, no literal token). This is an
+*additive reporting view* — it re-groups existing scenarios, adds no new ones and changes
+no numbers — that turns the otherwise binary per-class result into a graceful degradation
+curve (100% → 42% → 0%), and directly motivates the future semantic agent (it lifts the
+"hard" bar off 0%).
 
 ## Results snapshot (Presidio off, seed 23)
 
@@ -104,6 +114,7 @@ latency (avg + p95 per hop).
     by leak style : verbatim/derived/credential 100% · obfuscated 42% · paraphrase 0%
     by domain     : hospital 83 · finance 81 · hr 79 · education 77  (consistent = generalization)
     by topology   : chain 83 · branch 80 · star 78  (near-flat: Haris mediates per hop)
+    by difficulty : easy 100% · medium 42% · hard 0%  (graceful degradation as the leak is hidden)
     false positives confined to authorized_external (coarse internal/external boundary)
 
 Honest reading: high where Haris is designed to be strong; two documented gap classes (semantic

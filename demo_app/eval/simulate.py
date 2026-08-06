@@ -55,6 +55,7 @@ def summarize(records: list[dict]) -> dict:
         "by_leak_style": group("leak_style"),
         "by_domain": group("domain"),
         "by_topology": group("topology"),
+        "by_difficulty": {k: v for k, v in group("difficulty").items() if k},
         "by_family": group("family"),
     }
 
