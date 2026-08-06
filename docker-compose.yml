@@ -11,8 +11,10 @@ services:
     image: haris
     ports:
       - "8501:8501"
-    # Values come from a local .env file (copy .env.example -> .env). Both are optional:
-    # with no token the dashboard runs open for local dev; with no webhook, alerts no-op.
-    env_file:
-      - .env
+    # Config passed as env vars. Compose auto-loads a local .env for the ${...} values, so
+    # the container starts even with no .env — but the dashboard REQUIRES an operator token
+    # (HARIS_DASHBOARD_TOKEN) and fails closed without one. Set it in .env (see .env.example).
+    environment:
+      HARIS_DASHBOARD_TOKEN: ${HARIS_DASHBOARD_TOKEN:-}
+      HARIS_ALERT_WEBHOOK: ${HARIS_ALERT_WEBHOOK:-}
     restart: unless-stopped

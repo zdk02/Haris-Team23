@@ -145,10 +145,18 @@ def _authenticated() -> bool:
     """The dashboard exposes Haris's security audit log — the most sensitive artifact in
     the system — so only an authenticated operator may view it. MVP: a shared operator
     token from the HARIS_DASHBOARD_TOKEN env var; verifying a real identity (SSO / IAM) is
-    a deployment concern. With no token configured the gate stays open for local dev, with
-    a visible notice."""
-    if not OPERATOR_TOKEN or st.session_state.get("operator_authed"):
+    a deployment concern.
+
+    An operator token is REQUIRED. If none is configured the dashboard fails closed
+    (access denied) rather than exposing the audit log — there is no open mode."""
+    if st.session_state.get("operator_authed"):
         return True
+    if not OPERATOR_TOKEN:
+        st.markdown("## 🔒 Haris — access denied")
+        st.error("No operator token is configured (`HARIS_DASHBOARD_TOKEN`). This dashboard "
+                 "exposes the security audit log and **requires** an operator token — set one "
+                 "in the environment to enable access.")
+        return False
     st.markdown("## 🔒 Haris — operator sign-in")
     st.caption("This dashboard shows Haris's security audit log. "
                "Enter the operator token to continue.")
@@ -412,9 +420,6 @@ def _audit_log(records, sessions, subjects):
 def main():
     if not _authenticated():
         return
-    if not OPERATOR_TOKEN:
-        st.caption("⚠️ No operator token set (HARIS_DASHBOARD_TOKEN) — dashboard is open for "
-                   "local dev. Set the env var to require operator sign-in.")
     page, mode, include_secrets = _sidebar()
 
     if include_secrets and not _presidio_ok():
