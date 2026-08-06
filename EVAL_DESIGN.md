@@ -135,3 +135,10 @@ rates depend on the family mix, so the **per-class breakdowns are the real resul
 Real-LLM realism slice (a few LLM-driven scenarios + an independent LLM judge); the semantic agent
 that would close the paraphrase (and harden the obfuscation) gap; enabling Presidio in CI for the
 Secrets/PII contribution and a realistic (~11 ms) latency figure.
+
+Additional evasion techniques Haris does not yet handle — named here as future work rather than
+scored, because their ground truth would rely on construction (no literal token survives), which
+would dilute the eval's ~92% traffic-verified independence: **encoded** identifiers (base64/hex),
+identifiers **split across messages**, and **homoglyph/zero-width** obfuscation. A normalization +
+reassembly pre-pass on the info-flow agent would address these; they'd extend the "hard" tier of
+the difficulty gradient.
