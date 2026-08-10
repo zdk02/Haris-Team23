@@ -60,6 +60,21 @@ header[data-testid="stHeader"]{ background:transparent; }
 .block-container{ padding:1.1rem 1.6rem 3rem; max-width:100%; }
 section[data-testid="stSidebar"]{ background:linear-gradient(180deg,var(--surface-1),rgba(15,21,35,.5)); border-right:1px solid var(--hairline-soft); }
 section[data-testid="stSidebar"] *{ color:var(--text); }
+section[data-testid="stSidebar"]{ min-width:285px; box-shadow:18px 0 45px rgba(0,0,0,.24); }
+section[data-testid="stSidebar"] > div{ padding-top:1.25rem; }
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{
+  color:#AAB5CB; font-family:var(--f-mono); font-size:10px; letter-spacing:.16em;
+  margin:.45rem 0 .3rem; }
+section[data-testid="stSidebar"] [role="radiogroup"]{ gap:5px; }
+section[data-testid="stSidebar"] [role="radiogroup"] label{
+  border:1px solid transparent; border-radius:9px; padding:8px 10px;
+  background:rgba(20,28,46,.62); transition:background .18s,border-color .18s,transform .18s; }
+section[data-testid="stSidebar"] [role="radiogroup"] label:hover{
+  background:var(--surface-3); border-color:var(--hairline); transform:translateX(2px); }
+section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){
+  background:linear-gradient(90deg,rgba(90,169,255,.20),rgba(90,169,255,.06));
+  border-color:rgba(90,169,255,.42); box-shadow:inset 3px 0 0 var(--agent); }
+section[data-testid="stSidebar"] hr{ border-color:var(--hairline); margin:1rem 0; }
 h1,h2,h3{ font-family:var(--f-display); }
 .brand{ display:flex; align-items:center; gap:12px; padding:2px 2px 14px; }
 .brand .mark{ width:40px;height:40px;border-radius:11px;flex:none;display:grid;place-items:center;
@@ -113,6 +128,13 @@ div[data-testid="stVerticalBlock"] .stButton>button:hover{ background:var(--surf
 .legend .item{ display:flex; align-items:center; gap:7px; }
 .legend .sw{ width:16px; height:3px; border-radius:2px; display:inline-block; }
 .legend .sw.dash{ background:repeating-linear-gradient(90deg,var(--sensitive) 0 5px, transparent 5px 9px); }
+.graph-intro{ display:flex; justify-content:space-between; align-items:center; gap:18px;
+  padding:14px 16px; margin:4px 0 10px; border:1px solid var(--hairline-soft);
+  border-radius:12px; background:linear-gradient(120deg,rgba(90,169,255,.09),rgba(180,135,255,.05)); }
+.graph-intro .gi-title{ font-family:var(--f-display); font-size:14px; font-weight:600; }
+.graph-intro .gi-copy{ color:var(--text-mut); font-size:11.5px; margin-top:3px; }
+.graph-intro .gi-badge{ flex:none; color:var(--agent); font-family:var(--f-mono); font-size:10px;
+  padding:6px 9px; border-radius:20px; border:1px solid rgba(90,169,255,.28); background:rgba(90,169,255,.08); }
 /* --- notification / alert banner (Phase 4) --- */
 .alertbar{ border-radius:12px; padding:12px 16px; margin:2px 0 14px; border:1px solid; }
 .alertbar.crit{ background:var(--block-dim); border-color:rgba(255,92,114,.4); }
@@ -279,22 +301,39 @@ def _graph(graph):
     except Exception:
         st.error("Install the graph renderer:  pip install streamlit-agraph")
         return
-    node_color = {"source": COLOR["flag"], "agent": COLOR["agent"], "sink": COLOR["muted"],
-                  "external": COLOR["external"], "internal": COLOR["allow"]}
+    node_color = {"source": COLOR["flag"], "agent": COLOR["agent"], "sink": "#6F7C98",
+                  "external": COLOR["external"], "internal": COLOR["allow"],
+                  "protection": COLOR["sensitive"]}
+    node_shape = {"source": "database", "agent": "dot", "sink": "dot",
+                  "external": "diamond", "internal": "diamond", "protection": "box"}
     nodes = [Node(id=n["id"], label=n["label"],
-                  size=24 if n["kind"] in ("agent", "source") else 18,
-                  color=node_color.get(n["kind"], COLOR["agent"]),
-                  font={"color": "#E7ECF6", "face": "IBM Plex Sans"})
+                  title=f'{n["label"]} · {n["role"]}',
+                  size=27 if n["kind"] in ("agent", "source") else 21,
+                  shape=node_shape.get(n["kind"], "dot"),
+                  color={"background": node_color.get(n["kind"], COLOR["agent"]),
+                         "border": "#E7ECF6" if n["kind"] == "protection" else node_color.get(n["kind"], COLOR["agent"]),
+                         "highlight": {"background": "#E7ECF6", "border": COLOR["agent"]}},
+                  borderWidth=2 if n["kind"] == "protection" else 1,
+                  font={"color": "#F5F7FC", "face": "IBM Plex Sans", "size": 14})
              for n in graph["nodes"]]
     edges = [Edge(source=e["source"], target=e["target"],
                   color=ACTION_COLOR.get(e["action"], COLOR["muted"]),
-                  label=e["action"], dashes=bool(e["sensitive"]),
-                  width=3 if e["action"] == "block" else 2)
+                  label=(e.get("label") or e["action"]).upper(),
+                  dashes=True if e.get("relationship") == "inspection" else bool(e["sensitive"]),
+                  width=3 if e["action"] == "block" else (1 if e.get("relationship") == "inspection" else 2))
              for e in graph["edges"]]
     # physics OFF + hierarchical => fast, deterministic layout (no wandering nodes)
-    cfg = Config(width=760, height=430, directed=True, physics=False, hierarchical=True,
+    graph_height = max(470, min(680, 330 + len(graph["nodes"]) * 18))
+    cfg = Config(width=760, height=graph_height, directed=True, physics=False,
+                 hierarchical={"enabled": True, "direction": "LR", "sortMethod": "directed",
+                               "levelSeparation": 190, "nodeSpacing": 125, "treeSpacing": 170},
                  nodeHighlightBehavior=True, highlightColor=COLOR["agent"],
                  collapsible=False, backgroundColor="#0F1523")
+    st.markdown(
+        '<div class="graph-intro"><div><div class="gi-title">Protected multi-agent runtime</div>'
+        '<div class="gi-copy">Live message routes with Haris inspection agents and policy outcomes.</div></div>'
+        f'<div class="gi-badge">{len(graph["nodes"])} NODES · {len(graph["edges"])} LINKS</div></div>',
+        unsafe_allow_html=True)
     agraph(nodes=nodes, edges=edges, config=cfg)
     st.markdown(
         '<div class="legend">'
@@ -302,7 +341,8 @@ def _graph(graph):
         '<div class="item"><span class="sw" style="background:var(--flag)"></span>Flagged</div>'
         '<div class="item"><span class="sw" style="background:var(--sensitive)"></span>Redacted</div>'
         '<div class="item"><span class="sw" style="background:var(--block)"></span>Blocked</div>'
-        '<div class="item"><span class="sw dash"></span>Carries sensitive data</div></div>',
+        '<div class="item"><span class="sw dash"></span>Inspection / sensitive path</div>'
+        '<div class="item"><span style="color:var(--sensitive);font-size:15px">■</span>Haris protection agent</div></div>',
         unsafe_allow_html=True)
 
 

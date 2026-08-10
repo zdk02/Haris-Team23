@@ -276,10 +276,12 @@ def compute_modules(records: list[dict]) -> list[dict]:
 
 
 def build_graph(records: list[dict]) -> dict[str, list[dict]]:
-    """Aggregate interaction graph: agents + recipients as nodes, hops as edges.
+    """Build a dynamic protection map from the audit records.
 
-    Edge color = the most severe decision seen on that route; `sensitive` marks
-    edges carrying PHI-derived data (rendered dashed by the UI)."""
+    Runtime agents and destinations come from message routes, while Haris protection
+    agents come from the verdicts attached to those messages. Nothing in the topology
+    is tied to the hospital demo. Edge color is the most severe decision seen on a
+    route; ``sensitive`` marks edges carrying PHI-derived data."""
     severity = {"allow": 0, "log": 1, "flag": 2, "redact": 3, "block": 4}
 
     nodes: dict[str, dict] = {}
@@ -287,13 +289,15 @@ def build_graph(records: list[dict]) -> dict[str, list[dict]]:
         nodes.setdefault(nid, {"id": nid, "label": label, "role": role, "kind": kind})
 
     edges: dict[tuple, dict] = {}
-    def add_edge(src, dst, action, data_type, subject, sensitive, extra_label=""):
-        key = (src, dst)
+    def add_edge(src, dst, action, data_type, subject, sensitive, extra_label="",
+                 relationship="flow"):
+        key = (src, dst, relationship)
         e = edges.get(key)
         if e is None or severity[action] > severity[e["action"]]:
             edges[key] = {"source": src, "target": dst, "action": action,
                           "data_type": data_type, "data_subject": subject,
-                          "sensitive": sensitive, "label": extra_label}
+                          "sensitive": sensitive, "label": extra_label,
+                          "relationship": relationship}
 
     # Generic, app-agnostic roles: a node that only sends is a source, only receives is a
     # sink, and one that does both is an agent. No app-specific names are hardcoded, so
@@ -324,6 +328,21 @@ def build_graph(records: list[dict]) -> dict[str, list[dict]]:
             add_node(rcpt, rcpt, kind, kind)
             add_edge(r["receiver"], rcpt, r["action"], r["data_type"],
                      r["data_subject"], sensitive)
+
+        # Verdicts are the audit log's source of truth for which Haris agents actually
+        # inspected this hop. Prefixing their IDs prevents a name collision with an
+        # application agent that happens to use the same name.
+        for verdict in r.get("verdicts", []):
+            agent_name = verdict.get("agent", "security-agent")
+            guard_id = f"haris::{agent_name}"
+            add_node(guard_id, verdict.get("agent_label", agent_name),
+                     "protection", "protection")
+            verdict_action = "redact" if verdict.get("redacts") else verdict.get("label", "log")
+            if verdict_action == "pass":
+                verdict_action = "allow"
+            add_edge(guard_id, r["receiver"], verdict_action, r["data_type"],
+                     r["data_subject"], sensitive=False, extra_label="protects",
+                     relationship="inspection")
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
