@@ -58,6 +58,9 @@ CSS = """
 header[data-testid="stHeader"]{ background:transparent; }
 [data-testid="stSidebarCollapsedControl"]{ visibility:visible !important; opacity:1 !important; }
 .block-container{ padding:1.1rem 1.6rem 3rem; max-width:100%; }
+[data-testid="stSelectbox"]{ max-width:560px; }
+[data-testid="stCustomComponentV1"]{ overflow:hidden; border-radius:12px; }
+[data-testid="stCustomComponentV1"] iframe{ max-width:100%; }
 section[data-testid="stSidebar"]{ background:linear-gradient(180deg,var(--surface-1),rgba(15,21,35,.5)); border-right:1px solid var(--hairline-soft); }
 section[data-testid="stSidebar"] *{ color:var(--text); }
 section[data-testid="stSidebar"]{ min-width:285px; box-shadow:18px 0 45px rgba(0,0,0,.24); }
@@ -295,7 +298,7 @@ def _kpis(k):
     st.markdown(f'<div class="kpis">{html_cells}</div>', unsafe_allow_html=True)
 
 
-def _graph(graph):
+def _graph(graph, compact=False):
     try:
         from streamlit_agraph import agraph, Node, Edge, Config
     except Exception:
@@ -344,12 +347,22 @@ def _graph(graph):
         return {n["id"]: (left + i * step, y) for i, n in enumerate(items)}
 
     positions = {}
-    positions.update(spread(ordered_apps, -300, 120, -115))
-    positions.update(spread(guard_nodes, -305, 220, 190))
-    positions.update(spread(endpoint_nodes, 255, 255, -170))
+    if compact:
+        app_left, app_right, app_y = -250, 60, -95
+        guard_left, guard_right, guard_y = -255, 145, 165
+        endpoint_x, endpoint_y, endpoint_gap = 195, -145, 105
+        hub_position = (-65, 35)
+    else:
+        app_left, app_right, app_y = -300, 120, -115
+        guard_left, guard_right, guard_y = -305, 220, 190
+        endpoint_x, endpoint_y, endpoint_gap = 255, -170, 125
+        hub_position = (-65, 55)
+    positions.update(spread(ordered_apps, app_left, app_right, app_y))
+    positions.update(spread(guard_nodes, guard_left, guard_right, guard_y))
+    positions.update(spread(endpoint_nodes, endpoint_x, endpoint_x, endpoint_y))
     for i, endpoint in enumerate(endpoint_nodes):
-        positions[endpoint["id"]] = (255, -170 + i * 125)
-    positions["haris::guard"] = (-65, 55)
+        positions[endpoint["id"]] = (endpoint_x, endpoint_y + i * endpoint_gap)
+    positions["haris::guard"] = hub_position
 
     def display_label(node):
         label = str(node["label"])
@@ -362,14 +375,22 @@ def _graph(graph):
                   title=f'{n["label"]} · {n["role"]}',
                   x=positions.get(n["id"], (0, 0))[0],
                   y=positions.get(n["id"], (0, 0))[1], fixed={"x": True, "y": True},
-                  size=31 if n["kind"] == "security_hub" else (25 if n["kind"] in ("agent", "source") else (18 if n["kind"] == "protection" else 20)),
+                  size=(26 if compact and n["kind"] == "security_hub" else
+                        31 if n["kind"] == "security_hub" else
+                        21 if compact and n["kind"] in ("agent", "source") else
+                        25 if n["kind"] in ("agent", "source") else
+                        15 if compact and n["kind"] == "protection" else
+                        18 if n["kind"] == "protection" else
+                        17 if compact else 20),
                   shape=node_shape.get(n["kind"], "dot"),
                   color={"background": node_color.get(n["kind"], COLOR["agent"]),
                          "border": "#E7ECF6" if n["kind"] in ("protection", "security_hub") else node_color.get(n["kind"], COLOR["agent"]),
                          "highlight": {"background": "#E7ECF6", "border": COLOR["agent"]}},
                   borderWidth=3 if n["kind"] == "security_hub" else (2 if n["kind"] == "protection" else 1),
                   font={"color": "#F5F7FC", "face": "IBM Plex Sans",
-                        "size": 14 if n["kind"] != "protection" else 11})
+                        "size": (10 if compact and n["kind"] == "protection" else
+                                 11 if compact else
+                                 11 if n["kind"] == "protection" else 14)})
              for n in graph["nodes"]]
     edges = [Edge(source=e["source"], target=e["target"],
                   color=("#8D6BD8" if e.get("relationship") == "inspection"
@@ -381,13 +402,13 @@ def _graph(graph):
                   width=(1 if e.get("relationship") == "inspection" else
                          2 if e.get("relationship") == "protection" else
                          3 if e["action"] == "block" else 2),
-                  font={"color": "#AAB5CB", "size": 9, "face": "IBM Plex Mono",
+                  font={"color": "#AAB5CB", "size": 8 if compact else 9, "face": "IBM Plex Mono",
                         "strokeWidth": 0, "background": "#0F1523"},
                   smooth={"enabled": True, "type": "cubicBezier",
                           "forceDirection": "horizontal", "roundness": 0.35})
              for e in graph["edges"]]
-    graph_height = max(520, min(680, 400 + len(graph["nodes"]) * 12))
-    cfg = Config(width=760, height=graph_height, directed=True, physics=False,
+    graph_height = 410 if compact else max(520, min(680, 400 + len(graph["nodes"]) * 12))
+    cfg = Config(width=640 if compact else 760, height=graph_height, directed=True, physics=False,
                  hierarchical=False,
                  nodeHighlightBehavior=True, highlightColor=COLOR["agent"],
                  collapsible=False, backgroundColor="#0F1523")
@@ -556,7 +577,7 @@ def main():
             st.markdown('<div class="panel-head"><h2>Agent interaction graph</h2>'
                         '<span class="hint">— sensitive data traced across hops</span></div>',
                         unsafe_allow_html=True)
-            _graph(graph)
+            _graph(graph, compact=True)
         with right:
             _stream(recs)
         st.markdown("<br>", unsafe_allow_html=True)
