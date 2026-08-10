@@ -535,7 +535,13 @@ def _audit_log(records, sessions, subjects):
     } for r in records
         if r["session"] in f_sess and r["action"] in f_dec
         and (r["data_subject"] in f_subj or r["data_subject"] is None)]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(rows), use_container_width=True, hide_index=True,
+        column_config={
+            "session": st.column_config.TextColumn("session", width="large"),
+            "recipient": st.column_config.TextColumn("recipient", width="medium"),
+            "data_subject": st.column_config.TextColumn("data_subject", width="medium"),
+        })
 
 
 # --------------------------------------------------------------------------- #
