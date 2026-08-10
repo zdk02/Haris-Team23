@@ -28,9 +28,15 @@ def test_protection_nodes_are_derived_from_verdicts():
     assert node["kind"] == "protection"
     assert any(
         edge["source"] == "haris::custom_guard"
-        and edge["target"] == "summarizer"
+        and edge["target"] == "haris::guard"
         and edge["relationship"] == "inspection"
         and edge["action"] == "flag"
+        for edge in graph["edges"]
+    )
+    assert any(
+        edge["source"] == "haris::guard"
+        and edge["target"] == "summarizer"
+        and edge["relationship"] == "protection"
         for edge in graph["edges"]
     )
 
@@ -45,4 +51,3 @@ def test_redacting_verdict_is_rendered_as_redaction_protection():
 
     inspection = next(e for e in graph["edges"] if e["relationship"] == "inspection")
     assert inspection["action"] == "redact"
-

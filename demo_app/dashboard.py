@@ -303,30 +303,92 @@ def _graph(graph):
         return
     node_color = {"source": COLOR["flag"], "agent": COLOR["agent"], "sink": "#6F7C98",
                   "external": COLOR["external"], "internal": COLOR["allow"],
-                  "protection": COLOR["sensitive"]}
+                  "protection": "#8D6BD8", "security_hub": COLOR["sensitive"]}
     node_shape = {"source": "database", "agent": "dot", "sink": "dot",
-                  "external": "diamond", "internal": "diamond", "protection": "box"}
-    nodes = [Node(id=n["id"], label=n["label"],
+                  "external": "diamond", "internal": "diamond", "protection": "box",
+                  "security_hub": "hexagon"}
+
+    # Fixed positions produce a stable, readable security architecture instead of a
+    # force-directed tangle. All groups and positions are derived from the live graph.
+    app_nodes = [n for n in graph["nodes"] if n["kind"] in ("source", "agent", "sink")]
+    guard_nodes = [n for n in graph["nodes"] if n["kind"] == "protection"]
+    endpoint_nodes = [n for n in graph["nodes"] if n["kind"] in ("internal", "external")]
+
+    flow_edges = [e for e in graph["edges"] if e.get("relationship") == "flow"]
+    indegree = {n["id"]: 0 for n in app_nodes}
+    outgoing = {n["id"]: [] for n in app_nodes}
+    for edge in flow_edges:
+        if edge["source"] in indegree and edge["target"] in indegree:
+            indegree[edge["target"]] += 1
+            outgoing[edge["source"]].append(edge["target"])
+    by_id = {n["id"]: n for n in app_nodes}
+    queue = sorted((nid for nid, degree in indegree.items() if degree == 0),
+                   key=lambda nid: by_id[nid]["label"])
+    ordered_apps = []
+    while queue:
+        nid = queue.pop(0)
+        ordered_apps.append(by_id[nid])
+        for target in outgoing[nid]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+                queue.sort(key=lambda item: by_id[item]["label"])
+    ordered_ids = {n["id"] for n in ordered_apps}
+    ordered_apps.extend(sorted((n for n in app_nodes if n["id"] not in ordered_ids),
+                               key=lambda n: n["label"]))
+
+    def spread(items, left, right, y):
+        if not items:
+            return {}
+        step = (right - left) / max(1, len(items) - 1)
+        return {n["id"]: (left + i * step, y) for i, n in enumerate(items)}
+
+    positions = {}
+    positions.update(spread(ordered_apps, -300, 120, -115))
+    positions.update(spread(guard_nodes, -305, 220, 190))
+    positions.update(spread(endpoint_nodes, 255, 255, -170))
+    for i, endpoint in enumerate(endpoint_nodes):
+        positions[endpoint["id"]] = (255, -170 + i * 125)
+    positions["haris::guard"] = (-65, 55)
+
+    def display_label(node):
+        label = str(node["label"])
+        if node["kind"] in ("internal", "external") and "@" in label:
+            local, domain = label.split("@", 1)
+            return f"{local}@\n{domain}"
+        return label
+
+    nodes = [Node(id=n["id"], label=display_label(n),
                   title=f'{n["label"]} · {n["role"]}',
-                  size=27 if n["kind"] in ("agent", "source") else 21,
+                  x=positions.get(n["id"], (0, 0))[0],
+                  y=positions.get(n["id"], (0, 0))[1], fixed={"x": True, "y": True},
+                  size=31 if n["kind"] == "security_hub" else (25 if n["kind"] in ("agent", "source") else (18 if n["kind"] == "protection" else 20)),
                   shape=node_shape.get(n["kind"], "dot"),
                   color={"background": node_color.get(n["kind"], COLOR["agent"]),
-                         "border": "#E7ECF6" if n["kind"] == "protection" else node_color.get(n["kind"], COLOR["agent"]),
+                         "border": "#E7ECF6" if n["kind"] in ("protection", "security_hub") else node_color.get(n["kind"], COLOR["agent"]),
                          "highlight": {"background": "#E7ECF6", "border": COLOR["agent"]}},
-                  borderWidth=2 if n["kind"] == "protection" else 1,
-                  font={"color": "#F5F7FC", "face": "IBM Plex Sans", "size": 14})
+                  borderWidth=3 if n["kind"] == "security_hub" else (2 if n["kind"] == "protection" else 1),
+                  font={"color": "#F5F7FC", "face": "IBM Plex Sans",
+                        "size": 14 if n["kind"] != "protection" else 11})
              for n in graph["nodes"]]
     edges = [Edge(source=e["source"], target=e["target"],
-                  color=ACTION_COLOR.get(e["action"], COLOR["muted"]),
-                  label=(e.get("label") or e["action"]).upper(),
+                  color=("#8D6BD8" if e.get("relationship") == "inspection"
+                         else COLOR["agent"] if e.get("relationship") == "protection"
+                         else ACTION_COLOR.get(e["action"], COLOR["muted"])),
+                  label=("" if e.get("relationship") in ("inspection", "protection")
+                         else (e.get("label") or e["action"]).upper()),
                   dashes=True if e.get("relationship") == "inspection" else bool(e["sensitive"]),
-                  width=3 if e["action"] == "block" else (1 if e.get("relationship") == "inspection" else 2))
+                  width=(1 if e.get("relationship") == "inspection" else
+                         2 if e.get("relationship") == "protection" else
+                         3 if e["action"] == "block" else 2),
+                  font={"color": "#AAB5CB", "size": 9, "face": "IBM Plex Mono",
+                        "strokeWidth": 0, "background": "#0F1523"},
+                  smooth={"enabled": True, "type": "cubicBezier",
+                          "forceDirection": "horizontal", "roundness": 0.35})
              for e in graph["edges"]]
-    # physics OFF + hierarchical => fast, deterministic layout (no wandering nodes)
-    graph_height = max(470, min(680, 330 + len(graph["nodes"]) * 18))
+    graph_height = max(520, min(680, 400 + len(graph["nodes"]) * 12))
     cfg = Config(width=760, height=graph_height, directed=True, physics=False,
-                 hierarchical={"enabled": True, "direction": "LR", "sortMethod": "directed",
-                               "levelSeparation": 190, "nodeSpacing": 125, "treeSpacing": 170},
+                 hierarchical=False,
                  nodeHighlightBehavior=True, highlightColor=COLOR["agent"],
                  collapsible=False, backgroundColor="#0F1523")
     st.markdown(
@@ -341,7 +403,8 @@ def _graph(graph):
         '<div class="item"><span class="sw" style="background:var(--flag)"></span>Flagged</div>'
         '<div class="item"><span class="sw" style="background:var(--sensitive)"></span>Redacted</div>'
         '<div class="item"><span class="sw" style="background:var(--block)"></span>Blocked</div>'
-        '<div class="item"><span class="sw dash"></span>Inspection / sensitive path</div>'
+        '<div class="item"><span class="sw dash"></span>Security check</div>'
+        '<div class="item"><span class="sw" style="background:var(--agent)"></span>Protected by Haris</div>'
         '<div class="item"><span style="color:var(--sensitive);font-size:15px">■</span>Haris protection agent</div></div>',
         unsafe_allow_html=True)
 

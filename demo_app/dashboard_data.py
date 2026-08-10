@@ -330,19 +330,25 @@ def build_graph(records: list[dict]) -> dict[str, list[dict]]:
                      r["data_subject"], sensitive)
 
         # Verdicts are the audit log's source of truth for which Haris agents actually
-        # inspected this hop. Prefixing their IDs prevents a name collision with an
-        # application agent that happens to use the same name.
+        # inspected this hop. They feed a single guard hub instead of drawing every
+        # detector directly to every runtime agent; that preserves the information while
+        # keeping larger multi-agent graphs legible.
         for verdict in r.get("verdicts", []):
             agent_name = verdict.get("agent", "security-agent")
             guard_id = f"haris::{agent_name}"
+            hub_id = "haris::guard"
             add_node(guard_id, verdict.get("agent_label", agent_name),
                      "protection", "protection")
+            add_node(hub_id, "HARIS GUARD", "security gateway", "security_hub")
             verdict_action = "redact" if verdict.get("redacts") else verdict.get("label", "log")
             if verdict_action == "pass":
                 verdict_action = "allow"
-            add_edge(guard_id, r["receiver"], verdict_action, r["data_type"],
-                     r["data_subject"], sensitive=False, extra_label="protects",
+            add_edge(guard_id, hub_id, verdict_action, r["data_type"],
+                     r["data_subject"], sensitive=False, extra_label="check",
                      relationship="inspection")
+            add_edge(hub_id, r["receiver"], r["action"], r["data_type"],
+                     r["data_subject"], sensitive=False, extra_label="guards",
+                     relationship="protection")
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
