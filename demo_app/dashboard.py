@@ -492,8 +492,11 @@ def _inspector(records):
         f'<span class="k">Mode</span><span class="v">{"enforce" if r["enforced"] else "monitor"}</span></div>'
         f'<div class="label-dim">CONTRIBUTING VERDICTS</div>{verdict_lines}'
         f'<div class="label-dim">DELIVERED PAYLOAD</div>'
-        f'<div class="payload">{_highlight_payload(r["final_content"])}</div>'
-        f'<div class="label-dim">DATA LINEAGE</div><div class="lineage">{lineage}</div>',
+        + (f'<div class="payload" style="color:var(--block)">Not delivered — content '
+           f'withheld. Reference: {r["content_sha256"][:16]}…</div>'
+           if r["action"] == "block" else
+           f'<div class="payload">{_highlight_payload(r["final_content"])}</div>')
+        + f'<div class="label-dim">DATA LINEAGE</div><div class="lineage">{lineage}</div>',
         unsafe_allow_html=True)
 
 

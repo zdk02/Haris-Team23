@@ -117,15 +117,19 @@ class InformationFlowAgent(SecurityAgent):
         if self._destination_allowed(message):
             recipient = message.metadata.get("recipient")
             return self._pass(
-                f"derived identifiers {hits} resurfaced but destination is within "
+                f"{len(hits)} derived identifier(s) resurfaced but destination is within "
                 f"the trust boundary ({recipient}); PHI-origin flow permitted")
 
         redacted = self._mask(message.content, hits)
-        subj_note = f" [data_subject(s): {sorted(subjects)}]" if subjects else ""
         recipient = message.metadata.get("recipient")
-        reason = (f"derived content carries identifiers that originated in a PHI "
-                  f"source and is bound outside the trust boundary "
-                  f"(recipient={recipient}): {hits}{subj_note}")
+        # This reason reaches the SENDER via HarisBlocked (schemas/decision.py:62) and is
+        # stored verbatim in the audit record. It must never carry the matched values: that
+        # would tell a compromised sender exactly which strings tripped the detector so it
+        # could bisect its payload, and it would put PHI into a log that holds only hashes.
+        subj_note = f", {len(subjects)} data-subject(s)" if subjects else ""
+        reason = (f"derived content carries {len(hits)} identifier(s) that originated in a "
+                  f"PHI source and is bound outside the trust boundary "
+                  f"(recipient={recipient}){subj_note}")
         score = min(0.99, 0.6 + 0.15 * len(hits))   # more identifiers -> higher score
         return Verdict(agent_name=self.name, label=Label.FLAG, score=score,
                        reason=reason, redacted_content=redacted)

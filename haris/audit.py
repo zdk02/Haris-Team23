@@ -13,10 +13,13 @@ This is the SECURITY tier. The separate OPERATIONAL tier (errors, health, lifecy
 metadata, never message bodies.
 
 How this tier is protected (the mentor's "how do you protect Haris itself?"):
-  * MINIMIZE WHAT IT HOLDS — it stores a SHA-256 hash of the message content, not the raw
-    content, so a breach of the log yields hashes, not raw secrets. `store_delivered_content`
-    keeps the delivered (post-redaction) form for the demo dashboard; flip it off for a
-    hardened deployment that retains only hashes + metadata.
+  * MINIMIZE WHAT IT HOLDS — every record stores a SHA-256 reference to the original
+    message, never the original itself. A BLOCKED message keeps nothing but that hash:
+    content Haris refused to deliver is never retained, whatever the settings. For messages
+    that WERE delivered, `store_delivered_content` (on by default) keeps the delivered form
+    — the post-redaction text for a REDACT, the original for an ALLOW — so the dashboard can
+    show what actually reached the receiver. A hardened deployment sets it False and retains
+    only hashes + metadata.
   * APPEND-ONLY + TAMPER-EVIDENT — every record carries the hash of the previous record
     (`prev_hash`) and a hash over itself (`entry_hash`), forming a chain. Editing or
     deleting any record breaks the chain, which `verify_chain()` detects — so an attacker
@@ -35,7 +38,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from haris.schemas.decision import Decision
+from haris.schemas.decision import Action, Decision
 from haris.schemas.message import Message
 
 
@@ -97,8 +100,16 @@ class AuditLog:
 
     def record(self, message: Message, decision: Decision, latency_ms: float) -> AuditRecord:
         md = message.metadata or {}
-        delivered = (decision.final_content
-                     if decision.final_content is not None else message.content)
+        # What the receiver actually got. A BLOCKED message was never delivered, so the
+        # log keeps only its hash reference - content Haris refused to pass on is never
+        # retained. (The engine only yields BLOCK in enforce mode; monitor clamps it to
+        # FLAG in policy/engine._apply_mode, so this can't discard a delivered message.)
+        if decision.action is Action.BLOCK:
+            delivered = None
+        elif decision.final_content is not None:
+            delivered = decision.final_content      # REDACT - the scrubbed form
+        else:
+            delivered = message.content             # ALLOW / LOG / FLAG - delivered as-is
         fields = {
             "timestamp": message.timestamp.isoformat(),
             "session_id": message.session_id,
