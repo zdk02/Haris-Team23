@@ -100,8 +100,16 @@ def test_paraphrase_is_the_documented_gap(results):
     assert _family(results, "external_paraphrase", "detected") == 0.0
 
 
-def test_obfuscated_is_partially_caught(results):
-    assert _family(results, "external_obfuscated", "stopped") < 1.0   # a hard class
+def test_obfuscated_is_caught_after_normalization(results):
+    """Trivial reformatting ('MRN-4821' -> 'MRN - 4821') used to evade the exact-substring
+    taint match — 42% caught. Normalizing both sides before matching (casefold, collapse
+    whitespace and punctuation) closes it completely.
+
+    This family is therefore NO LONGER a difficulty tier: what looked like "medium
+    difficulty" was our matcher being brittle, not the attack being hard. Rebuilding a
+    real gradient with a graded obfuscation ladder is tracked in issue #19.
+    """
+    assert _family(results, "external_obfuscated", "stopped") == 1.0
 
 
 def test_false_positives_are_confined_to_authorized_external(results):

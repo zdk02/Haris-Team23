@@ -42,6 +42,20 @@ from haris.schemas.verdict import Label, Verdict
 _STOPWORDS = {"patient", "record", "visit", "summary", "note", "follow", "up",
               "the", "and", "of", "advised", "reports", "over"}
 
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _tokens(s: str) -> list[str]:
+    """Lowercased alphanumeric words. Collapses runs of whitespace and punctuation, so
+    'Robert  Roberts' and 'Robert Roberts' produce the same token list."""
+    return _WORD.findall(s.lower())
+
+
+def _norm_alnum(s: str) -> str:
+    """Lowercase, letters and digits only — so 'MRN - 4821' and 'MRN 4 8 2 1' both
+    collapse to the same string as 'MRN-4821'."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
 # Sentinel so we can tell "caller passed nothing (use the default Presidio detector)"
 # apart from "caller passed None (disable the detector, structured tags only)".
 _AUTO = object()
@@ -105,8 +119,14 @@ class InformationFlowAgent(SecurityAgent):
         if not tags:
             return self._pass("no PHI source in lineage")
 
-        haystack = message.content.lower()
-        hits = sorted({t for t in tags if t.lower() in haystack})
+        # Normalize the message ONCE, then test every tag against it. The old check was
+        # `tag.lower() in content.lower()` — an exact substring match, which a double
+        # space or a reformatted identifier defeated entirely.
+        content_joined = " ".join(_tokens(message.content))
+        content_alnum = _norm_alnum(message.content)
+        hits = sorted({t for t in tags
+                       if " ".join(_tokens(t)) in content_joined
+                       or (len(_norm_alnum(t)) >= 6 and _norm_alnum(t) in content_alnum)})
         if not hits:
             # Derived from PHI, but no source identifier resurfaced. This is the
             # coarse detector's blind spot for deep semantic paraphrase.
@@ -232,5 +252,11 @@ class InformationFlowAgent(SecurityAgent):
     def _mask(self, text: str, hits: list[str]) -> str:
         out = text
         for h in sorted(hits, key=len, reverse=True):   # longest first, avoid partials
-            out = re.sub(re.escape(h), "[REDACTED]", out, flags=re.IGNORECASE)
+            toks = _tokens(h)
+            if not toks:
+                continue
+            # Allow any run of non-alphanumerics between the tag's words, so a reformatted
+            # identifier ('MRN - 0001') is redacted as well as an exact one ('MRN-0001').
+            pattern = r"[^a-zA-Z0-9]*".join(re.escape(t) for t in toks)
+            out = re.sub(pattern, "[REDACTED]", out, flags=re.IGNORECASE)
         return out

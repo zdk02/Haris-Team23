@@ -1,0 +1,50 @@
+Haris — simulation-based evaluation  (Presidio OFF, fixed seed)
+
+scenarios: 312  (attacks 192 · benign 120)
+
+HEADLINE
+  without Haris : 192/192 attacks leak (100%)
+  with Haris    : 168/192 stopped  -> leak-prevention 88%
+  detection     : 88%  (monitor arm)
+  false positive: 20%  (24/120 benign wrongly stopped)
+  utility       : 80%  (benign traffic delivered unharmed)
+  latency/hop   : 0.06 ms avg · 0.18 ms p95
+
+BY LEAK STYLE  (paraphrase = the honest gap)
+  credential           detect=100%  prevent=100%  fp=—     (n=24)
+  derived              detect=100%  prevent=100%  fp=33%   (n=120)
+  none                 detect=100%  prevent=100%  fp=0%    (n=96)
+  obfuscated           detect=100%  prevent=100%  fp=—     (n=24)
+  paraphrase           detect=0%    prevent=0%    fp=—     (n=24)
+  verbatim             detect=100%  prevent=100%  fp=—     (n=24)
+
+BY DOMAIN  (consistency = generalization)
+  education            detect=88%   prevent=88%   fp=20%   (n=78)
+  finance              detect=88%   prevent=88%   fp=20%   (n=78)
+  hospital             detect=88%   prevent=88%   fp=20%   (n=78)
+  hr                   detect=88%   prevent=88%   fp=20%   (n=78)
+
+BY TOPOLOGY  (near-flat by design: Haris judges each hop independently)
+  branch               detect=88%   prevent=88%   fp=20%   (n=104)
+  chain                detect=88%   prevent=88%   fp=20%   (n=104)
+  star                 detect=88%   prevent=88%   fp=20%   (n=104)
+
+BY DIFFICULTY  (data-exfiltration: how hard the attacker hides the leak)
+  easy     detect=100%  prevent=100%  (n=48)
+  medium   detect=100%  prevent=100%  (n=24)
+  hard     detect=0%    prevent=0%    (n=24)
+
+BY FAMILY
+  authorized_external  detect=—     prevent=—     fp=100%  (n=24)
+  external_credential  detect=100%  prevent=100%  fp=—     (n=24)
+  external_derived     detect=100%  prevent=100%  fp=—     (n=24)
+  external_obfuscated  detect=100%  prevent=100%  fp=—     (n=24)
+  external_paraphrase  detect=0%    prevent=0%    fp=—     (n=24)
+  external_verbatim    detect=100%  prevent=100%  fp=—     (n=24)
+  internal_clean       detect=—     prevent=—     fp=0%    (n=24)
+  internal_derived     detect=—     prevent=—     fp=0%    (n=24)
+  near_miss_benign     detect=—     prevent=—     fp=0%    (n=24)
+  policy_egress        detect=100%  prevent=100%  fp=—     (n=24)
+  same_subject         detect=—     prevent=—     fp=0%    (n=24)
+  spoof                detect=100%  prevent=100%  fp=—     (n=24)
+  subject_mismatch     detect=100%  prevent=100%  fp=—     (n=24)
