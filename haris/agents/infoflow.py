@@ -42,6 +42,16 @@ from haris.schemas.verdict import Label, Verdict
 _STOPWORDS = {"patient", "record", "visit", "summary", "note", "follow", "up",
               "the", "and", "of", "advised", "reports", "over"}
 
+# Keys whose VALUE is an identifier worth tainting. The extractor used to take the value
+# of EVERY "Key: value" line, so free-text fields (a clinical note, a status) turned
+# ordinary words into taint tags and flagged benign messages. Keys are compared with
+# punctuation stripped, so "STU-ID", "stu_id" and "ApiKey" all resolve. Narrative fields
+# are deliberately excluded.
+_IDENTIFYING_KEYS = frozenset({
+    "name", "mrn", "dob", "ssn", "diagnosis", "detail", "apikey",
+    "stuid", "acct", "account", "empid", "email", "phone", "id", "recordid",
+})
+
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -243,17 +253,20 @@ class InformationFlowAgent(SecurityAgent):
         return self._detector
 
     def _structured_tags(self, record_text: str) -> set[str]:
-        """Spike-grade structured extractor: bracketed subject id + 'Key: value' lines.
-        Kept as a fallback / union partner to the real detector."""
+        """Structured extractor: the bracketed subject id + the values of IDENTIFYING
+        "Key: value" lines. Restricted to `_IDENTIFYING_KEYS` — taking every key's value
+        turned narrative fields into taint tags, which flagged benign messages."""
         tags: set[str] = set()
         # subject id from a header like "PATIENT RECORD [patient-A]"
         for m in re.findall(r"\[([^\]]+)\]", record_text):
             tags.add(m.strip())
-        # structured "Key: value" lines -> take the values as identifier tags
+        # values of IDENTIFYING "Key: value" lines only
         for line in record_text.splitlines():
             if ":" not in line:
                 continue
-            _, _, value = line.partition(":")
+            key, _, value = line.partition(":")
+            if _norm_alnum(key) not in _IDENTIFYING_KEYS:
+                continue
             for part in re.split(r"[;,]", value):   # split "a; b, c" compounds
                 part = part.strip()
                 if part:
