@@ -125,8 +125,7 @@ class InformationFlowAgent(SecurityAgent):
         content_joined = " ".join(_tokens(message.content))
         content_alnum = _norm_alnum(message.content)
         hits = sorted({t for t in tags
-                       if " ".join(_tokens(t)) in content_joined
-                       or (len(_norm_alnum(t)) >= 6 and _norm_alnum(t) in content_alnum)})
+                       if self._tag_resurfaces(t, content_joined, content_alnum)})
         if not hits:
             # Derived from PHI, but no source identifier resurfaced. This is the
             # coarse detector's blind spot for deep semantic paraphrase.
@@ -190,6 +189,25 @@ class InformationFlowAgent(SecurityAgent):
 
         return {t for t in tags if len(t) >= self.min_tag_len and t.lower() not in _STOPWORDS}
 
+    def _tag_resurfaces(self, tag: str, content_joined: str, content_alnum: str) -> bool:
+        """Has this taint tag reappeared in the message? Two normalized passes.
+
+        1. TOKEN — compare whitespace-collapsed word sequences, PADDED with spaces so
+           the match respects word boundaries: the tag 'doe' must not match inside
+           'doebank'. Catches double spaces, line breaks, and punctuation between words.
+        2. COLLAPSE — strip every non-alphanumeric from both sides, so 'MRN - 4821' and
+           'MRN 4 8 2 1' match the tag 'MRN-4821'. This one has no word boundaries, so
+           it is gated on length: a short tag would otherwise match inside an unrelated
+           number.
+        """
+        tag_tokens = _tokens(tag)
+        if not tag_tokens:
+            return False
+        if f" {' '.join(tag_tokens)} " in f" {content_joined} ":
+            return True
+        collapsed = _norm_alnum(tag)
+        return len(collapsed) >= 6 and collapsed in content_alnum
+    
     def _detector_tags(self, text: str) -> Optional[set[str]]:
         """Tags from Module 7's PIIDetector. Returns None if no detector is available
         (import/engine failure or explicitly disabled), so the caller can fall back."""
@@ -257,6 +275,8 @@ class InformationFlowAgent(SecurityAgent):
                 continue
             # Allow any run of non-alphanumerics between the tag's words, so a reformatted
             # identifier ('MRN - 0001') is redacted as well as an exact one ('MRN-0001').
-            pattern = r"[^a-zA-Z0-9]*".join(re.escape(t) for t in toks)
+            pattern = (r"(?<![a-zA-Z0-9])"
+                       + r"[^a-zA-Z0-9]*".join(re.escape(t) for t in toks)
+                       + r"(?![a-zA-Z0-9])")
             out = re.sub(pattern, "[REDACTED]", out, flags=re.IGNORECASE)
         return out
