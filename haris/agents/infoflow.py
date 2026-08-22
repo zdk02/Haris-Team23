@@ -23,6 +23,14 @@ Phase 2 promotion over the spike (Module 9 scope):
      but not one outside it. This is distinct from Module 8's stateless relationship
      check — it is conditioned on the data's PHI *origin*.
 
+Matching (Aug 22 rework, measured in report/evidence/):
+  * Both sides are NORMALISED before comparison, so a double space or a reformatted
+    identifier no longer defeats the check.
+  * Matching is TOKEN-level with alphanumeric boundaries, so a tag is not matched
+    inside a longer unrelated word.
+  * The structured extractor only tags values from fields that actually identify
+    somebody, so ordinary prose ("Status: stable") no longer taints the session.
+
 Honest limit (measured in the Step 5 spike, see claude/Haris-Step5-Findings.md):
 deep SEMANTIC paraphrase — the identifier itself reworded ("Type 2 diabetes" ->
 "a chronic blood-sugar condition") — leaves no exact tag to resurface, so the coarse
@@ -42,11 +50,10 @@ from haris.schemas.verdict import Label, Verdict
 _STOPWORDS = {"patient", "record", "visit", "summary", "note", "follow", "up",
               "the", "and", "of", "advised", "reports", "over"}
 
-# Keys whose VALUE is an identifier worth tainting. The extractor used to take the value
-# of EVERY "Key: value" line, so free-text fields (a clinical note, a status) turned
-# ordinary words into taint tags and flagged benign messages. Keys are compared with
-# punctuation stripped, so "STU-ID", "stu_id" and "ApiKey" all resolve. Narrative fields
-# are deliberately excluded.
+# Structured record fields whose VALUE identifies a person, a subject or a secret.
+# Everything else in a "Key: value" record is prose and must not become taint.
+# Overridable per deployment via the `identifying_keys` constructor argument — the
+# agent stays application-agnostic; this frozenset is only the default.
 _IDENTIFYING_KEYS = frozenset({
     "name", "mrn", "dob", "ssn", "diagnosis", "detail", "apikey",
     "stuid", "acct", "account", "empid", "email", "phone", "id", "recordid",
@@ -66,6 +73,7 @@ def _norm_alnum(s: str) -> str:
     collapse to the same string as 'MRN-4821'."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
+
 # Sentinel so we can tell "caller passed nothing (use the default Presidio detector)"
 # apart from "caller passed None (disable the detector, structured tags only)".
 _AUTO = object()
@@ -83,6 +91,8 @@ class InformationFlowAgent(SecurityAgent):
         internal_domains: Iterable[str] = ("hospital.internal",),
         flag_unknown_destination: bool = True,
         use_structured_fallback: bool = True,
+        min_collapse_len: int = 6,
+        identifying_keys: Iterable[str] = _IDENTIFYING_KEYS,
     ) -> None:
         """
         detector: an object exposing `.analyze(text) -> results` where each result has
@@ -95,6 +105,11 @@ class InformationFlowAgent(SecurityAgent):
             it as NOT allowed (flag). Keeps the spike's catch-by-default posture.
         use_structured_fallback: also union the structured record-field extractor so
             record-specific identifiers Presidio misses (MRN, diagnosis) still taint.
+        min_collapse_len: shortest normalised tag allowed to match with separators
+            stripped. Below this length the collapsed form is too short to be evidence
+            of anything ('DOB' would match inside 'dobbs'), so only token matching runs.
+        identifying_keys: structured record fields whose value should become taint.
+            Defaults to `_IDENTIFYING_KEYS`; pass your own for a non-clinical domain.
         """
         self.source_data_type = source_data_type
         self.min_tag_len = min_tag_len
@@ -103,6 +118,10 @@ class InformationFlowAgent(SecurityAgent):
         self.internal_domains = tuple(d.lstrip("@").lower() for d in internal_domains)
         self.flag_unknown_destination = flag_unknown_destination
         self.use_structured_fallback = use_structured_fallback
+        self.min_collapse_len = min_collapse_len
+        # Normalise the keys once so lookup is insensitive to case, spaces and
+        # punctuation ('Record ID', 'record_id' and 'recordid' all match).
+        self.identifying_keys = frozenset(_norm_alnum(k) for k in identifying_keys)
 
     # ------------------------------------------------------------------ #
     # SecurityAgent contract
@@ -164,6 +183,29 @@ class InformationFlowAgent(SecurityAgent):
                        reason=reason, redacted_content=redacted)
 
     # ------------------------------------------------------------------ #
+    # Matching
+    # ------------------------------------------------------------------ #
+
+    def _tag_resurfaces(self, tag: str, content_joined: str, content_alnum: str) -> bool:
+        """Does `tag` reappear in the (already normalised) message?
+
+        Two passes, in order of confidence:
+          1. TOKEN match — the tag's words, in order, surrounded by spaces in the
+             token-joined content. The padding spaces are what keep 'Ann' from
+             matching inside 'Announcement'.
+          2. COLLAPSED match — every non-alphanumeric character removed from both
+             sides, so 'MRN - 0001' still matches 'MRN-0001'. Length-gated by
+             `min_collapse_len`: a short collapsed tag is not evidence of anything.
+        """
+        tag_tokens = _tokens(tag)
+        if not tag_tokens:
+            return False
+        if f" {' '.join(tag_tokens)} " in f" {content_joined} ":
+            return True
+        collapsed = _norm_alnum(tag)
+        return len(collapsed) >= self.min_collapse_len and collapsed in content_alnum
+
+    # ------------------------------------------------------------------ #
     # Destination rule
     # ------------------------------------------------------------------ #
 
@@ -199,25 +241,6 @@ class InformationFlowAgent(SecurityAgent):
 
         return {t for t in tags if len(t) >= self.min_tag_len and t.lower() not in _STOPWORDS}
 
-    def _tag_resurfaces(self, tag: str, content_joined: str, content_alnum: str) -> bool:
-        """Has this taint tag reappeared in the message? Two normalized passes.
-
-        1. TOKEN — compare whitespace-collapsed word sequences, PADDED with spaces so
-           the match respects word boundaries: the tag 'doe' must not match inside
-           'doebank'. Catches double spaces, line breaks, and punctuation between words.
-        2. COLLAPSE — strip every non-alphanumeric from both sides, so 'MRN - 4821' and
-           'MRN 4 8 2 1' match the tag 'MRN-4821'. This one has no word boundaries, so
-           it is gated on length: a short tag would otherwise match inside an unrelated
-           number.
-        """
-        tag_tokens = _tokens(tag)
-        if not tag_tokens:
-            return False
-        if f" {' '.join(tag_tokens)} " in f" {content_joined} ":
-            return True
-        collapsed = _norm_alnum(tag)
-        return len(collapsed) >= 6 and collapsed in content_alnum
-    
     def _detector_tags(self, text: str) -> Optional[set[str]]:
         """Tags from Module 7's PIIDetector. Returns None if no detector is available
         (import/engine failure or explicitly disabled), so the caller can fall back."""
@@ -253,19 +276,20 @@ class InformationFlowAgent(SecurityAgent):
         return self._detector
 
     def _structured_tags(self, record_text: str) -> set[str]:
-        """Structured extractor: the bracketed subject id + the values of IDENTIFYING
-        "Key: value" lines. Restricted to `_IDENTIFYING_KEYS` — taking every key's value
-        turned narrative fields into taint tags, which flagged benign messages."""
+        """Spike-grade structured extractor: bracketed subject id + 'Key: value' lines.
+        Kept as a fallback / union partner to the real detector."""
         tags: set[str] = set()
         # subject id from a header like "PATIENT RECORD [patient-A]"
         for m in re.findall(r"\[([^\]]+)\]", record_text):
             tags.add(m.strip())
-        # values of IDENTIFYING "Key: value" lines only
+        # structured "Key: value" lines -> take the values as identifier tags, but ONLY
+        # for fields that actually identify somebody. Taking every value made ordinary
+        # prose ("Status: stable") taint the session and produced false positives.
         for line in record_text.splitlines():
             if ":" not in line:
                 continue
             key, _, value = line.partition(":")
-            if _norm_alnum(key) not in _IDENTIFYING_KEYS:
+            if _norm_alnum(key) not in self.identifying_keys:
                 continue
             for part in re.split(r"[;,]", value):   # split "a; b, c" compounds
                 part = part.strip()
@@ -288,6 +312,8 @@ class InformationFlowAgent(SecurityAgent):
                 continue
             # Allow any run of non-alphanumerics between the tag's words, so a reformatted
             # identifier ('MRN - 0001') is redacted as well as an exact one ('MRN-0001').
+            # The lookarounds are the redaction-side twin of the token match in
+            # `_tag_resurfaces`: without them 'Ann' would redact inside 'Announcement'.
             pattern = (r"(?<![a-zA-Z0-9])"
                        + r"[^a-zA-Z0-9]*".join(re.escape(t) for t in toks)
                        + r"(?![a-zA-Z0-9])")
