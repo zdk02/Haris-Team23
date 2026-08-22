@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+import itertools
 import networkx as nx
 
 from haris.state.base import StateStore
@@ -54,7 +55,9 @@ class GraphStateStore(StateStore):
         self._taint_origin_types = frozenset(taint_origin_types)
         # Monotonic edge key so repeated hops between the same two agents are
         # distinct and ordering is stable regardless of timestamp resolution.
-        self._seq = 0
+        # itertools.count() rather than an int: its __next__ is atomic, so concurrent
+        # hops can't draw the same key and silently overwrite each other's edge.
+        self._seq = itertools.count()
 
     # ------------------------------------------------------------------ #
     # Frozen contract (haris/state/base.py) — identical to InMemoryStateStore
@@ -70,14 +73,14 @@ class GraphStateStore(StateStore):
         self.graph.add_edge(
             message.sender,
             message.receiver,
-            key=self._seq,
+            key=next(self._seq),
             session_id=message.session_id,
             data_type=md.get("data_type"),
             data_subject=md.get("data_subject"),
             timestamp=message.timestamp,
             content=message.content,
         )
-        self._seq += 1
+        
 
     def get_context(self, session_id: str) -> dict[str, Any]:
         # Exact parity with InMemoryStateStore: {"history": [Message, ...]}.

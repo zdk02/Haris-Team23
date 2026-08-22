@@ -51,8 +51,12 @@ every message, so a breach of Haris is worse than any single leak. We therefore:
 
 - **minimize what it stores** — the audit log keeps a SHA-256 hash of each message, not the
   raw body, so a breach yields hashes, not secrets;
-- **make the audit log tamper-evident** — records are hash-chained, so any edit or deletion
-  is detectable (`AuditLog.verify_chain()`); it is append-only in effect;
+- **make the audit log tamper-evident** — records are hash-chained, and with an operator
+  key configured (`HARIS_AUDIT_KEY`) each link is an HMAC, so an attacker who reaches the
+  log cannot rewrite it or forge new entries without detection. Two honest limits: dropping
+  records from the *end* leaves a valid shorter chain, so truncation is caught only against
+  a head hash stored outside the log; and an attacker who can execute code inside Haris can
+  read the key. Write-once storage is the deployment-era answer to both.
 - **treat inspected content as untrusted** — Haris's checks are deterministic detectors, not
   an LLM being fed the content as instructions, so a message can't prompt-inject Haris;
 - **gate who can read the audit log** — the dashboard requires an operator token.
@@ -159,6 +163,10 @@ show the basics work; TC1 shows Haris is safe to leave on.
   false-positive rate so we can tune thresholds against a number.
 - **Full self-protection is deployment-era** — isolation/IAM, real operator identity, and a
   signed/WORM audit store are not in this version.
+- **The audit chain is tamper-evident, not tamper-proof.** With a key configured it detects
+  rewriting and forged appends, but truncation is only caught against a head hash stored
+  outside the log, and an attacker with code execution inside Haris can read the key.
+  Write-once storage or external anchoring is the deployment-era answer.
 
 ## 9. The rules for the demo
 

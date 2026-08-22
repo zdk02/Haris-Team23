@@ -21,9 +21,16 @@ How this tier is protected (the mentor's "how do you protect Haris itself?"):
     show what actually reached the receiver. A hardened deployment sets it False and retains
     only hashes + metadata.
   * APPEND-ONLY + TAMPER-EVIDENT — every record carries the hash of the previous record
-    (`prev_hash`) and a hash over itself (`entry_hash`), forming a chain. Editing or
-    deleting any record breaks the chain, which `verify_chain()` detects — so an attacker
-    who reaches the log can't quietly alter or erase their tracks without it showing.
+    (`prev_hash`) and a hash over itself (`entry_hash`), forming a chain. With
+    `HARIS_AUDIT_KEY` set the link is an HMAC, so an attacker who can write the log cannot
+    recompute it: editing a record, rewriting the whole file, and appending a forged entry
+    all fail `verify_chain()`. WITHOUT a key it degrades to a plain hash chain — evidence
+    of accidental corruption, not of a deliberate rewrite. TRUNCATION is different again:
+    dropping records off the END leaves a shorter but internally-consistent chain, so it is
+    caught only by comparing against a head hash held OUTSIDE this log (`head()`, then
+    `verify_chain(expected_head=..., expected_count=...)`). And an attacker with code
+    execution in the Haris process can read the key — this resists offline tampering, not
+    process compromise. A WORM store or external anchoring is the roadmap.
   * DURABLE (optional) — pass `path=` and each record is also appended to a JSONL file as
     it is written (append-only on disk). `load_jsonl()` reads it back and re-verifies.
 
@@ -34,7 +41,10 @@ the hash chain is the honest MVP of the same property.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
+import threading
 from dataclasses import asdict, dataclass
 from typing import Optional
 
@@ -45,12 +55,31 @@ from haris.schemas.message import Message
 def _sha256(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
+def _audit_key() -> bytes:
+    """The chain key. Set HARIS_AUDIT_KEY in the environment to make the chain KEYED."""
+    return os.environ.get("HARIS_AUDIT_KEY", "").encode("utf-8")
 
-def _entry_hash(fields: dict, prev_hash: str) -> str:
-    """Hash over a record's content fields plus the previous entry's hash — the chain link.
-    Canonical (sorted keys) so the same record always hashes the same way."""
+def _entry_hash(fields: dict, prev_hash: str, key: bytes = b"") -> str:
+    """Chain link: a hash over this record's fields plus the previous entry's hash.
+    Canonical (sorted keys) so the same record always hashes the same way.
+
+    KEYED (HMAC) when a key is configured: an attacker who can write the log cannot
+    recompute the chain without it, so silent rewrite and forged append are both
+    detectable. Unkeyed it degrades to a plain SHA-256 chain, which is evidence of
+    accidental corruption but not of a deliberate rewrite."""
     payload = json.dumps({**fields, "prev_hash": prev_hash}, sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    data = payload.encode("utf-8")
+    return (hmac.new(key, data, hashlib.sha256).hexdigest() if key
+            else hashlib.sha256(data).hexdigest())
+
+def _last_entry_hash(path: str) -> str:
+    """entry_hash of the last record already on disk, or "" if the file is empty."""
+    last = ""
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                last = line
+    return json.loads(last)["entry_hash"] if last else ""
 
 
 # The record's own semantic fields (everything except the two chain fields), in order.
@@ -92,11 +121,21 @@ class AuditLog:
     """Append-only, tamper-evident, app-agnostic decision log written by the Orchestrator."""
 
     def __init__(self, store_delivered_content: bool = True,
-                 path: Optional[str] = None) -> None:
+                 path: Optional[str] = None,
+                 key: Optional[bytes] = None) -> None:
         self._records: list[AuditRecord] = []
         self.store_delivered_content = store_delivered_content
         # If set, each record is also appended to this JSONL file as it is written.
         self.path = path
+        self._key = _audit_key() if key is None else key
+        # Appending to an existing file must CONTINUE its chain. Without this, the first
+        # record written after every restart carries prev_hash="" and the chain is broken
+        # permanently — making a persisted audit log unverifiable after a single restart.
+        self._prev_hash = _last_entry_hash(path) if path and os.path.exists(path) else ""
+        # record() is a read-modify-append across _records and the file. Without a lock,
+        # two threads can read the same tip, both link to it, and the chain forks.
+        self._lock = threading.Lock()
+        
 
     def record(self, message: Message, decision: Decision, latency_ms: float) -> AuditRecord:
         md = message.metadata or {}
@@ -129,35 +168,50 @@ class AuditLog:
             "content_sha256": _sha256(message.content),
             "delivered_content": (delivered if self.store_delivered_content else None),
         }
-        prev = self._records[-1].entry_hash if self._records else ""
-        entry = _entry_hash(fields, prev)
-        rec = AuditRecord(**fields, prev_hash=prev, entry_hash=entry)
-        self._records.append(rec)
-        if self.path:
-            with open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(rec.as_dict()) + "\n")
+        with self._lock:
+            prev = self._records[-1].entry_hash if self._records else self._prev_hash
+            entry = _entry_hash(fields, prev, self._key)
+            rec = AuditRecord(**fields, prev_hash=prev, entry_hash=entry)
+            self._records.append(rec)
+            if self.path:
+                with open(self.path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec.as_dict()) + "\n")
         return rec
 
     def records(self) -> list[AuditRecord]:
         return list(self._records)
 
-    def verify_chain(self) -> bool:
-        """True iff the hash chain is intact — no record has been edited, reordered, or
-        deleted since it was written. Recomputes each link and checks it matches."""
-        prev = ""
+    def head(self) -> str:
+        """The chain's current tip — the last record's entry_hash.
+
+        Store this OUTSIDE the log's own storage. Comparing against it is the ONLY way to
+        detect TRUNCATION: dropping records off the end leaves a shorter chain that is
+        still internally consistent, so no check inside the file can reveal the loss."""
+        return self._records[-1].entry_hash if self._records else self._prev_hash
+    
+    def verify_chain(self, expected_head: Optional[str] = None,
+                     expected_count: Optional[int] = None) -> bool:
+        """True iff the chain is intact — no record edited, reordered, or removed from the
+        middle. Pass expected_head / expected_count (held outside this log) to also detect
+        TRUNCATION, which an internal check cannot see."""
+        prev = self._prev_hash
         for rec in self._records:
             if rec.prev_hash != prev:
                 return False
-            if _entry_hash(rec._fields(), prev) != rec.entry_hash:
+            if _entry_hash(rec._fields(), prev, self._key) != rec.entry_hash:
                 return False
             prev = rec.entry_hash
+        if expected_head is not None and prev != expected_head:
+            return False
+        if expected_count is not None and len(self._records) != expected_count:
+            return False
         return True
 
     @classmethod
-    def load_jsonl(cls, path: str) -> "AuditLog":
+    def load_jsonl(cls, path: str, key: Optional[bytes] = None) -> "AuditLog":
         """Load a persisted audit log from its JSONL file. The caller can then call
         verify_chain() to confirm the file hasn't been tampered with on disk."""
-        log = cls(path=None)
+        log = cls(path=None, key=key)
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()

@@ -138,3 +138,95 @@ def test_delivered_messages_still_keep_their_delivered_form():
     log = AuditLog()
     _orch(log).process(_msg("hello"))
     assert log.records()[0].delivered_content == "hello"
+
+def _forge_whole_chain(log, key=b""):
+    """The real attack: edit every record AND recompute every link, so the chain ends up
+    internally consistent again. Trivial unkeyed; impossible without the key."""
+    from haris.audit import _entry_hash
+    forged, prev = [], ""
+    for rec in log._records:
+        rec = replace(rec, action="allow-tampered", prev_hash=prev)
+        rec = replace(rec, entry_hash=_entry_hash(rec._fields(), prev, key))
+        forged.append(rec)
+        prev = rec.entry_hash
+    log._records = forged
+
+
+def test_keyed_chain_rejects_a_recomputed_rewrite():
+    """B1: an attacker who can write the log but has no key cannot rebuild it."""
+    log = AuditLog(key=b"operator-secret")
+    orch = _orch(log)
+    orch.process(_msg("one"))
+    orch.process(_msg("two"))
+    assert log.verify_chain() is True
+    _forge_whole_chain(log, key=b"")
+    assert log.verify_chain() is False
+
+
+def test_unkeyed_chain_is_forgeable_a_documented_limitation():
+    """Without HARIS_AUDIT_KEY the chain is corruption-evident, not tamper-evident.
+    Pinned as a test so the limitation stays visible instead of being forgotten."""
+    log = AuditLog(key=b"")
+    orch = _orch(log)
+    orch.process(_msg("one"))
+    orch.process(_msg("two"))
+    _forge_whole_chain(log, key=b"")
+    assert log.verify_chain() is True
+
+
+def test_forged_append_is_rejected_when_keyed():
+    """B1: a record sealed without the key fails verification."""
+    from haris.audit import _entry_hash
+    log = AuditLog(key=b"operator-secret")
+    _orch(log).process(_msg("one"))
+    prev = log.head()
+    forged = replace(log._records[-1], prev_hash=prev)
+    forged = replace(forged, entry_hash=_entry_hash(forged._fields(), prev, b""))
+    log._records.append(forged)
+    assert log.verify_chain() is False
+
+
+def test_persisted_chain_continues_across_a_restart(tmp_path):
+    """B3: a new process appending to an existing file must continue ITS chain."""
+    path = str(tmp_path / "audit.jsonl")
+    _orch(AuditLog(path=path, key=b"k")).process(_msg("one"))
+    _orch(AuditLog(path=path, key=b"k")).process(_msg("two"))      # the "restart"
+    loaded = AuditLog.load_jsonl(path, key=b"k")
+    assert len(loaded) == 2
+    assert loaded.verify_chain() is True
+
+
+def test_truncation_needs_a_head_held_outside_the_log(tmp_path):
+    """B2: dropping records off the end leaves a chain that still verifies internally."""
+    p = tmp_path / "audit.jsonl"
+    log = AuditLog(path=str(p), key=b"k")
+    orch = _orch(log)
+    for _ in range(3):
+        orch.process(_msg())
+    head, count = log.head(), len(log)
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    p.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")    # attacker truncates
+
+    t = AuditLog.load_jsonl(str(p), key=b"k")
+    assert t.verify_chain() is True                                        # looks intact
+    assert t.verify_chain(expected_head=head, expected_count=count) is False
+
+
+def test_concurrent_writes_keep_the_chain_valid():
+    """B4: six threads sharing one audit log."""
+    import threading
+    log = AuditLog()
+
+    def worker():
+        o = _orch(log)                    # own state store, shared audit log
+        for _ in range(50):
+            o.process(_msg())
+
+    ts = [threading.Thread(target=worker) for _ in range(6)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(log) == 300
+    assert log.verify_chain() is True
