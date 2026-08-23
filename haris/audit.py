@@ -16,10 +16,10 @@ How this tier is protected (the mentor's "how do you protect Haris itself?"):
   * MINIMIZE WHAT IT HOLDS — every record stores a SHA-256 reference to the original
     message, never the original itself. A BLOCKED message keeps nothing but that hash:
     content Haris refused to deliver is never retained, whatever the settings. For messages
-    that WERE delivered, `store_delivered_content` (on by default) keeps the delivered form
-    — the post-redaction text for a REDACT, the original for an ALLOW — so the dashboard can
-    show what actually reached the receiver. A hardened deployment sets it False and retains
-    only hashes + metadata.
+    that WERE delivered, `store_delivered_content` (OFF by default) keeps the delivered form
+    — the post-redaction text for a REDACT, the original for an ALLOW — so a demo dashboard
+    can show what actually reached the receiver. It is opt-in: by default the log retains
+    only hashes + metadata, and a deployment has to ask for content explicitly.
   * APPEND-ONLY + TAMPER-EVIDENT — every record carries the hash of the previous record
     (`prev_hash`) and a hash over itself (`entry_hash`), forming a chain. With
     `HARIS_AUDIT_KEY` set the link is an HMAC, so an attacker who can write the log cannot
@@ -120,7 +120,7 @@ class AuditRecord:
 class AuditLog:
     """Append-only, tamper-evident, app-agnostic decision log written by the Orchestrator."""
 
-    def __init__(self, store_delivered_content: bool = True,
+    def __init__(self, store_delivered_content: bool = False,
                  path: Optional[str] = None,
                  key: Optional[bytes] = None) -> None:
         self._records: list[AuditRecord] = []

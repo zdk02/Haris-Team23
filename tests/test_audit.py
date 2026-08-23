@@ -119,9 +119,9 @@ def test_jsonl_persistence_roundtrips_and_verifies(tmp_path):
 
 def test_blocked_content_is_never_retained():
     """A message Haris refused to deliver leaves no plaintext behind - even with
-    store_delivered_content ON (the demo default). Decision.final_content is only set
+    store_delivered_content explicitly ON. Decision.final_content is only set
     for REDACT, so BLOCK used to fall back to the raw message content."""
-    log = AuditLog()                                   # default: store_delivered_content=True
+    log = AuditLog(store_delivered_content=True)                                     
     secret = "AKIA-super-secret-key"
     with pytest.raises(HarisBlocked):
         _orch(log, agents=[_Blocker()], mode=Mode.ENFORCE).process(_msg(secret))
@@ -132,10 +132,9 @@ def test_blocked_content_is_never_retained():
     assert secret not in str(rec.as_dict())            # nowhere in the record
     assert rec.content_sha256 == _sha256(secret)       # the reference still survives
 
-
 def test_delivered_messages_still_keep_their_delivered_form():
-    """The dashboard needs this - the fix must not blind the allow/redact path."""
-    log = AuditLog()
+    """The dashboard needs this - retention must still work when explicitly asked for."""
+    log = AuditLog(store_delivered_content=True)
     _orch(log).process(_msg("hello"))
     assert log.records()[0].delivered_content == "hello"
 

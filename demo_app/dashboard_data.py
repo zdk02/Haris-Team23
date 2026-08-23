@@ -189,7 +189,7 @@ def run_battery(mode: Mode = Mode.ENFORCE, include_secrets: bool = True,
 
     agents = _build_agents(include_secrets)
     _play(Orchestrator(GraphStateStore(), agents=agents, policy=Policy(mode=mode)))  # warm-up
-    audit = AuditLog()
+    audit = AuditLog(store_delivered_content=True)   # demo replay: the dashboard renders payloads
     _play(Orchestrator(GraphStateStore(), agents=agents, policy=Policy(mode=mode),
                        audit_log=audit, notifier=notifier))                         # measured
     return audit
