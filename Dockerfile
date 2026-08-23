@@ -48,8 +48,8 @@ WORKDIR /app
 # attack surface. If a dependency ever does need to build from source, use a    #
 # multi-stage build rather than adding gcc back to the runtime image.           #
 # --------------------------------------------------------------------------- #
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY requirements.lock.txt .
+RUN pip install --no-cache-dir -r requirements.lock.txt \
     && python -m spacy download en_core_web_sm   # Presidio (Secrets/PII agent) needs this model
 
 # --------------------------------------------------------------------------- #
