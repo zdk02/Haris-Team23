@@ -19,9 +19,20 @@ from demo_app.eval.runner import run_all
 # --------------------------------------------------------------------------- #
 
 def test_generate_is_deterministic():
+    """Same seed -> byte-identical corpus, not merely the same scenario ids.
+
+    The ids are built from domain/topology/family/index, so they match even if every
+    message body changed. Comparing content, metadata and the injected secrets is what
+    actually pins the corpus - and every number in the report is a function of it, so a
+    silent drift here would move the results with nothing to show why.
+    """
     a, b = generate(), generate()
-    assert [s.id for s in a] == [s.id for s in b]        # same seed -> same scenarios
     assert len(a) == 312
+    assert [s.id for s in a] == [s.id for s in b]
+    for x, y in zip(a, b):
+        assert [m.content for m in x.messages] == [m.content for m in y.messages], x.id
+        assert [m.metadata for m in x.messages] == [m.metadata for m in y.messages], x.id
+        assert x.secret.identifiers() == y.secret.identifiers(), x.id
 
 
 def test_generate_covers_all_axes():
@@ -44,10 +55,12 @@ def test_build_agents_configures_every_domain():
 # Oracle (independent ground truth)
 # --------------------------------------------------------------------------- #
 
-def test_oracle_reproduces_every_label():
-    for s in generate():
-        should_stop, method = oracle_should_stop(s)
-        assert should_stop == s.is_attack, (s.id, method)
+# NOTE: there is deliberately no `assert oracle_should_stop(s) == s.is_attack` test.
+# The checker re-derives the label from the same metadata the generator wrote, so it is
+# structurally incapable of disagreeing - measured: 0 disagreements in 312. Asserting that
+# it agrees is a tautology, and dressing it up as "oracle correctness" overstated what the
+# check establishes. What the check IS good for is confirming that the generated TRAFFIC
+# realises the intended label, which is what test_oracle_is_mostly_traffic_verified covers.
 
 
 def test_oracle_is_mostly_traffic_verified():
@@ -76,17 +89,32 @@ def _family(results, fam, key):
     return _rate(rows, key)
 
 
-def test_baseline_stops_nothing(results):
-    attacks = [r for r in results if r["oracle_attack"]]
-    assert not any(r["baseline_stopped"] for r in attacks)   # no-Haris leaks everything
+# NOTE: there is deliberately no "baseline stops nothing" test. That arm ran an EMPTY
+# agent list in monitor mode, where most_restrictive([]) is ALLOW and monitor clamps
+# anything above FLAG regardless - so it could not have stopped anything, and asserting
+# that it did not was asserting a constant. Reference arms that can actually fail live in
+# demo_app/eval/baselines.py.
 
 
-def test_headline_is_strong_but_not_perfect(results):
-    attacks = [r for r in results if r["oracle_attack"]]
-    benign = [r for r in results if not r["oracle_attack"]]
-    assert 0.6 < _rate(attacks, "detected") < 1.0     # a real gap exists (not rigged)
-    assert 0.6 < _rate(attacks, "stopped") < 1.0
-    assert _rate(benign, "stopped") == pytest.approx(0.20, abs=0.01)  # honest FP
+def test_per_family_rates_match_the_committed_golden(results):
+    """Every family's measured behaviour is pinned to demo_app/eval/golden_rates.json.
+
+    This replaces value-band assertions (0.6 < detection < 1.0, FP == 0.20) that encoded
+    the marketing numbers as a pass condition - and made CI FAIL if the false-positive
+    rate improved to zero. What deserves guarding is that nobody changes these numbers
+    without noticing, in either direction. An improvement fails this test too, and should:
+    the report quotes these figures, so they must move together.
+
+    Regenerate with `python -m demo_app.eval.golden` and commit the diff in the same
+    commit as the change that caused it.
+    """
+    from demo_app.eval.golden import compute, diff, load
+
+    changes = diff(compute(results), load())
+    assert not changes, (
+        "measured behaviour changed:\n  " + "\n  ".join(changes)
+        + "\n\nIf this was intentional, run `python -m demo_app.eval.golden` and commit "
+          "the updated golden_rates.json alongside your change.")
 
 
 def test_designed_catches_are_full(results):
@@ -116,3 +144,5 @@ def test_false_positives_are_confined_to_authorized_external(results):
     assert _family(results, "authorized_external", "stopped") == 1.0
     for fam in ("internal_clean", "internal_derived", "near_miss_benign", "same_subject"):
         assert _family(results, fam, "stopped") == 0.0, fam
+
+        

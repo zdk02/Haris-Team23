@@ -1,0 +1,85 @@
+{
+  "attacks": 192,
+  "benign": 120,
+  "families": {
+    "authorized_external": {
+      "detected": 1.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "external_credential": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "external_derived": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "external_obfuscated": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "external_paraphrase": {
+      "detected": 0.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 0.0
+    },
+    "external_verbatim": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "internal_clean": {
+      "detected": 0.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 0.0
+    },
+    "internal_derived": {
+      "detected": 0.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 0.0
+    },
+    "near_miss_benign": {
+      "detected": 0.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 0.0
+    },
+    "policy_egress": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "same_subject": {
+      "detected": 0.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 0.0
+    },
+    "spoof": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
+    "subject_mismatch": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    }
+  },
+  "scenarios": 312
+}
