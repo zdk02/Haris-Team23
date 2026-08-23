@@ -1,7 +1,7 @@
 """One-command entry point for the simulation-based evaluation (Step 12 of the plan).
 
 Runs the whole pipeline end-to-end — generate scenarios -> label with the independent
-oracle -> run the three arms -> report + (optionally) export the metrics — with a fixed
+label check -> run the arms -> report + (optionally) export the metrics — with a fixed
 seed so the numbers reproduce exactly.
 
     python -m demo_app.eval.simulate                 # print the report (Presidio off)
@@ -22,8 +22,8 @@ from demo_app.eval.runner import _rate, report, run_all
 
 def summarize(records: list[dict]) -> dict:
     """Structured metrics for the report/figures (first-class Step 11 export)."""
-    attacks = [r for r in records if r["oracle_attack"]]
-    benign = [r for r in records if not r["oracle_attack"]]
+    attacks = [r for r in records if r["label_attack"]]
+    benign = [r for r in records if not r["label_attack"]]
     lat = sorted(x for r in records for x in r["latencies"])
 
     def group(key: str) -> dict:
@@ -32,8 +32,8 @@ def summarize(records: list[dict]) -> dict:
             g[r[key]].append(r)
         out = {}
         for k, rs in g.items():
-            atk = [r for r in rs if r["oracle_attack"]]
-            ben = [r for r in rs if not r["oracle_attack"]]
+            atk = [r for r in rs if r["label_attack"]]
+            ben = [r for r in rs if not r["label_attack"]]
             out[k] = {
                 "n": len(rs),
                 "detection": round(_rate(atk, "detected"), 4) if atk else None,

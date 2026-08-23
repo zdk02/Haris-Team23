@@ -26,17 +26,26 @@ One command runs everything, reproducibly:
 3. **Haris is app-agnostic already.** A new domain is run by passing its config (trust boundary,
    authorization allow-list, source data type, tokens) into the existing agents — no agent is
    forked or rewritten per domain (`demo_app/eval/domains.py::build_agents`).
-4. **The ground-truth oracle is independent of Haris.** It labels leak/no-leak from injected
-   facts + traffic, never from Haris's decision. It is allowed to be *more thorough* than Haris
-   (e.g. normalized matching) — that is what independent ground truth means.
+4. **The generator constructs ground truth; the check confirms the traffic realises it.**
+   `oracle.py` re-derives each label from the generated traffic and never consults Haris's
+   decision. It is NOT independent adjudication: it reads the same facts the generator wrote,
+   using checks that mirror Haris's own agents, and it disagrees with the generator **0 times
+   out of 312**. Call it a *label consistency check*. Genuine third-party confirmation is
+   bought separately — `external_check.py` runs `detect-secrets` over the egress traffic and
+   confirms **24 of 312** labels (credential-shaped secrets only; it has no opinion on names,
+   record ids or diagnoses). A small honest number, not a large dishonest one.
 5. **We do NOT target 100% detection / 0% false positives.** A deliberate difficulty spectrum
    plus per-class breakdowns make the numbers high but realistic, with visible, explainable edges.
-6. **Two honest "measured-miss" classes, no new defense built:**
-   - **Semantic paraphrase** — reworded, no exact token. Ground truth by construction (we author
-     it). Haris misses it → motivates the future semantic agent (out of scope).
-   - **Trivial obfuscation** — a reformatted identifier (`MRN-4821` → `MRN - 4821`). The oracle
-     catches it via normalized matching; Haris's exact-match taint misses part of it → shows the
-     detector's brittleness and motivates a normalization/semantic upgrade.
+6. **Both former "measured-miss" classes turned out not to be what we claimed.** Recorded here
+   rather than quietly dropped:
+   - **Trivial obfuscation** — was 42% caught, presented as a difficulty tier. It was our
+     matcher being brittle, not the attack being hard. Normalising both sides took it to 100%
+     (`report/evidence/eval_before_C1.txt` vs `eval_after_C1.txt`). It is no longer a tier;
+     a graded ladder is task M2.
+   - **Semantic paraphrase** — presented as the honest ceiling. Measured 2026-08-24: those 24
+     messages carry **no injected identifier at all**, so a correct detector *should* pass
+     them. It was an empty test scored as a failure, not a ceiling. Task M3 replaces it with
+     paraphrases that genuinely retain the secret.
 7. **The core evaluation is fully deterministic — no LLM judge.** Secrets are synthesized with
    **Faker (seeded)**, following the source paper's method. The only LLM judge is the optional
    real-LLM realism slice (future work).
@@ -73,22 +82,39 @@ leak_style, leak_occurred}`.
 | same_subject | benign | subject-binding negative control | allowed |
 | **authorized_external** | benign | coarse trust boundary | **wrongly stopped (FP source)** |
 
-## The three arms
+## The arms
 
-For each scenario, feed its messages through the existing `Orchestrator` (as `eval_harness.py`
-does): (1) no-Haris `agents=[]` monitor → baseline; (2) all agents `MONITOR` → detection;
-(3) all agents `ENFORCE` → prevention + latency (written to the tamper-evident `AuditLog`).
-Presidio is off by default (Info-flow's structured taint carries verbatim/derived/credential),
-so the run is deterministic and dependency-free.
+For each scenario, feed its messages through the existing `Orchestrator`:
+(1) all agents `MONITOR` → detection; (2) all agents `ENFORCE` → prevention + latency
+(written to the tamper-evident `AuditLog`). Presidio is off by default, so the run is
+deterministic and dependency-free.
 
-## Independent oracle (`oracle.py`)
+**There is no "no-Haris" arm.** The old one ran `agents=[]` in monitor mode, which cannot
+stop anything — `most_restrictive([])` is ALLOW and monitor clamps above FLAG regardless — so
+its "100% of attacks leak" was fixed before the run started.
 
-`oracle_should_stop(scenario) -> (bool, method)`, using only injected facts + traffic:
+The reference point is now **measured** instead (`leak_check.py`): a scenario *leaks* when
+content reaching an unauthorised recipient still carries an injected identifier. The same rule
+scores every arm, so success means "the secret did not arrive" rather than "a detector said
+block". Measured on the untouched traffic: **120 of 192** attack scenarios leak — not 192.
+48 name no external recipient at all (policy violations, nothing egresses) and 24 carry no
+identifier to leak.
+
+## Label consistency check (`oracle.py`)
+
+`label_consistency_check(scenario) -> (bool, method)`, using only injected facts + traffic:
 cross-subject (two subjects in one session) · bad-token (missing/wrong token vs the known
 registry) · identifier-egress (a known identifier reaches an unauthorized recipient, **exact or
 normalized** — the normalized check catches the obfuscated class) · else paraphrase-by-construction.
-Verified: it reproduces **all 312 labels**, **92% from traffic**; only paraphrase relies on
-construction.
+It re-derives **all 312 labels**, **92% from traffic**; only paraphrase rests on construction.
+
+That agreement is *not* evidence the check works — it reads the facts the generator wrote, so
+it cannot disagree on a corpus the generator built correctly. What does establish something is
+`tests/test_label_check_mutation.py`: it defuses one attack property at a time (redirect the
+egress to an authorised address, strip the identifiers, supply the correct token, collapse two
+subjects into one) and asserts the label flips, plus one test planting a secret into benign
+traffic and asserting it flips the other way. A check that can fail is worth something; one
+that cannot is decoration.
 
 ## Metrics (`runner.py` + `simulate.py` JSON export)
 
@@ -126,7 +152,10 @@ rates depend on the family mix, so the **per-class breakdowns are the real resul
     demo_app/eval/
       domains.py     # Domain dataclass + specs + build_agents() (per-domain config)
       generate.py    # scenario generator: families, Faker secret injection, leak styles
-      oracle.py      # independent ground-truth labeler (exact + normalized)
+      oracle.py         # label consistency check (exact + normalized)
+      leak_check.py     # outcome-based leak metric, independent of any detector
+      external_check.py # third-party confirmation via detect-secrets
+      golden.py         # per-family regression guard (golden_rates.json)
       runner.py      # three-arm runner + metrics/breakdowns
       simulate.py    # one-command entry point + JSON export
 

@@ -1,8 +1,12 @@
 """Tests for the simulation-based evaluation harness (demo_app/eval).
 
-Guards the eval in CI: determinism, oracle correctness/independence, and the honest
-shape of the results (strong but not perfect, with the documented gap and FP source).
-Runs with Presidio OFF so it's fast and dependency-light.
+Guards the eval in CI: corpus determinism, how much of the labelling is re-derivable from
+traffic, and the per-family rates (pinned to a golden file rather than asserted as value
+bands). Runs with Presidio OFF so it's fast and dependency-light.
+
+Two things are deliberately NOT tested here, each with a note at the point it would have
+gone: that the label check agrees with the generator (a tautology), and that an empty agent
+list stops nothing (a constant).
 """
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ import pytest
 
 from demo_app.eval.domains import DOMAINS, build_agents
 from demo_app.eval.generate import ATTACK_FAMILIES, BENIGN_FAMILIES, generate
-from demo_app.eval.oracle import oracle_should_stop
+from demo_app.eval.oracle import label_consistency_check
 from demo_app.eval.runner import run_all
 
 
@@ -52,26 +56,26 @@ def test_build_agents_configures_every_domain():
 
 
 # --------------------------------------------------------------------------- #
-# Oracle (independent ground truth)
+# Label consistency check (NOT an independent oracle)
 # --------------------------------------------------------------------------- #
 
-# NOTE: there is deliberately no `assert oracle_should_stop(s) == s.is_attack` test.
+# NOTE: there is deliberately no `assert label_consistency_check(s) == s.is_attack` test.
 # The checker re-derives the label from the same metadata the generator wrote, so it is
 # structurally incapable of disagreeing - measured: 0 disagreements in 312. Asserting that
 # it agrees is a tautology, and dressing it up as "oracle correctness" overstated what the
 # check establishes. What the check IS good for is confirming that the generated TRAFFIC
-# realises the intended label, which is what test_oracle_is_mostly_traffic_verified covers.
+# realises the intended label, which is what test_most_labels_are_re_derivable_from_traffic covers.
 
 
-def test_oracle_is_mostly_traffic_verified():
+def test_most_labels_are_re_derivable_from_traffic():
     # Only the paraphrase class may rely on construction; everything else from traffic.
-    methods = [oracle_should_stop(s)[1] for s in generate()]
+    methods = [label_consistency_check(s)[1] for s in generate()]
     traffic = sum(1 for m in methods if m.startswith("traffic"))
     assert traffic / len(methods) >= 0.9
 
 
 # --------------------------------------------------------------------------- #
-# Runner + metrics (run the three arms once, share across assertions)
+# Runner + metrics (run the two arms once, share across assertions)
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture(scope="module")
@@ -123,9 +127,22 @@ def test_designed_catches_are_full(results):
         assert _family(results, fam, "stopped") == 1.0, fam
 
 
-def test_paraphrase_is_the_documented_gap(results):
+def test_paraphrase_family_carries_no_identifier_yet(results):
+    """NOT a detector weakness — a defect in the corpus, pinned until task M3 fixes it.
+
+    This family was presented as the honest semantic ceiling: reworded content Haris cannot
+    catch. Measured 2026-08-24: those 24 messages carry NO injected identifier at all
+    (`leak_unmediated` is 0/24), so there is nothing in them to detect and a correct
+    detector SHOULD pass them. Scoring them as missed leaks made the corpus look harder
+    than it is and gave us a ceiling we had not actually measured.
+
+    M3 replaces them with paraphrases that genuinely retain the secret ("the 48-year-old
+    with the elevated A1c, chart four-eight-two-one"). When that lands this test should
+    start failing — that is the signal the family became a real test.
+    """
     assert _family(results, "external_paraphrase", "stopped") == 0.0
     assert _family(results, "external_paraphrase", "detected") == 0.0
+    assert _family(results, "external_paraphrase", "leak_unmediated") == 0.0
 
 
 def test_obfuscated_is_caught_after_normalization(results):
@@ -144,5 +161,3 @@ def test_false_positives_are_confined_to_authorized_external(results):
     assert _family(results, "authorized_external", "stopped") == 1.0
     for fam in ("internal_clean", "internal_derived", "near_miss_benign", "same_subject"):
         assert _family(results, fam, "stopped") == 0.0, fam
-
-        

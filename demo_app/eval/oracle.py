@@ -1,19 +1,41 @@
-"""Independent ground-truth oracle (Step 8 of the plan).
+"""Label CONSISTENCY check (Step 8 of the plan) — formerly, and misleadingly, "the oracle".
 
-Decides, for each scenario, whether it is a real attack/leak that SHOULD be stopped —
-using ONLY the injected facts and the observed traffic, never Haris's decision. This is
-what makes the evaluation credible: the labels are not produced by the thing under test.
+WHAT THIS IS, PRECISELY.
+The generator constructs ground truth: it decides which scenarios are attacks and builds
+traffic to match. This module re-derives that label from the traffic and checks the two
+agree. So it answers "did the generated traffic actually realise the label the generator
+intended?" — a real and useful question, and the reason a broken generator would be caught.
 
-It verifies from the traffic wherever it can (that is the strong, independent signal):
+WHAT IT IS NOT.
+It is not independent adjudication, and calling it an "independent oracle" overstated it in
+a way a reviewer would find in five minutes:
+
+  * it imports `demo_app.eval.domains` and calls `domain.tokens()` — the same function that
+    stamps tokens onto the generated traffic AND configures Haris's IdentityAgent;
+  * its three checks reimplement SubjectBinding, Identity and InformationFlow;
+  * `Secret.identifiers()` hands it exactly the fields Haris's structured extractor pulls,
+    so its identifier set and Haris's taint set are the same set, given to both by the
+    generator.
+
+Measured: it disagrees with the generator's label **0 times out of 312**. It is structurally
+incapable of disagreeing on a corpus the generator built correctly, which is why the test
+asserting that it agrees was deleted (see tests/test_eval_sim.py).
+
+Independence, where it can actually be bought, comes from a third-party tool that knows
+nothing about this generator: see `demo_app/eval/external_check.py`, which runs
+`detect-secrets` over the egress traffic and reports the subset it confirms.
+
+It verifies from the traffic wherever it can (a real signal, just not an independent one):
   * cross-subject contamination  -> two distinct data_subjects in one session
   * forged sender               -> a message whose token is missing/wrong vs the known
                                     per-domain registry (a ground-truth fact, not a Haris call)
   * identifier egress           -> a known identifier reaching a recipient NOT in the
                                     scenario's authorized-recipient list
-The one case it cannot verify by string-matching is the SEMANTIC PARAPHRASE leak (no exact
-token survives — that is precisely why it is hard). For that class only, ground truth is
-"by construction": we authored a reworded secret, so we know it is a leak. This is the
-documented, deterministic exception (see EVAL_DESIGN.md, decision 6).
+The one case it cannot verify from traffic is the PARAPHRASE class, where no exact token
+survives. For that class the label rests entirely on construction. NOTE (measured 2026-08-24):
+those messages carry no injected identifier at all, so "no token survives" is not evidence of
+a subtle leak — there is nothing in them to find. Task M3 replaces them with paraphrases that
+genuinely retain the secret; until then this class should not be read as a detector weakness.
 """
 from __future__ import annotations
 
@@ -30,8 +52,13 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def oracle_should_stop(scn: Scenario) -> tuple[bool, str]:
-    """Return (should_stop, method). Independent of Haris."""
+def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
+    """Return (should_stop, method): the label re-derived from the generated traffic.
+
+    Independent of HARIS's decision — it never runs an agent — but NOT independent of the
+    generator, which supplied both the traffic and the facts this reads. See the module
+    docstring.
+    """
     domain = DOMAINS[scn.domain]
     tokens = domain.tokens()
 
@@ -73,8 +100,9 @@ def oracle_should_stop(scn: Scenario) -> tuple[bool, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Self-test: the oracle must independently reproduce the by-construction labels,
-# and it must decide (almost) everything from TRAFFIC, not construction.
+# Self-test: how many labels are re-derivable from TRAFFIC rather than resting on
+# construction. Agreement with the generator is NOT evidence of anything here -- see
+# the module docstring -- so it is reported, not asserted.
 # --------------------------------------------------------------------------- #
 
 def _selftest() -> None:
@@ -88,7 +116,7 @@ def _selftest() -> None:
     traffic_verified = 0
 
     for scn in scenarios:
-        should_stop, method = oracle_should_stop(scn)
+        should_stop, method = label_consistency_check(scn)
         methods[method] += 1
         if method.startswith("traffic"):
             traffic_verified += 1
@@ -96,11 +124,11 @@ def _selftest() -> None:
             disagreements.append((scn.id, scn.family, should_stop, scn.is_attack, method))
 
     total = len(scenarios)
-    print(f"oracle checked {total} scenarios\n")
+    print(f"label consistency check: {total} scenarios\n")
     print("label method breakdown:")
     for m, c in sorted(methods.items()):
         print(f"  {m:<28} {c}")
-    print(f"\n  traffic-verified (independent of construction): "
+    print(f"\n  re-derived from traffic (not construction)   : "
           f"{traffic_verified}/{total} = {traffic_verified/total*100:.0f}%")
     print(f"  construction-only (paraphrase, unavoidable)   : {total - traffic_verified}")
 
@@ -110,9 +138,10 @@ def _selftest() -> None:
             print("   ", d)
         print("\nORACLE: FAIL")
     else:
-        print("\n  oracle agrees with every scenario's built-in label.")
-        print("ORACLE: PASS — labels are independently reproduced, "
-              "only paraphrase relies on construction (as designed).")
+        print("\n  the check agrees with every generated label.")
+        print("CONSISTENCY: PASS — the generated traffic realises the intended labels.")
+        print("  This is NOT independent adjudication: the check reads the same facts the")
+        print("  generator wrote. For third-party confirmation see external_check.py.")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,22 @@
-"""Three-arm runner + first-cut metrics (Steps 9 and 11 of the plan).
+"""Two-arm runner + metrics (Steps 9 and 11 of the plan).
 
-Runs every generated scenario through Haris three ways and compares the result against the
-independent oracle:
+Runs every generated scenario through Haris two ways and compares the result against the
+generated label:
 
-  * no-Haris  (agents=[], monitor)   -> baseline: nothing is stopped (the app leaks).
   * monitor   (agents, MONITOR)      -> DETECTION: did any agent raise a concern (flag/block)?
   * enforce   (agents, ENFORCE)      -> PREVENTION: was the message actually blocked/redacted?
 
+There is deliberately no "no-Haris" arm. Running an empty agent list in monitor mode cannot
+stop anything, so its 100% leak rate was fixed before the run started -- a constant, not a
+measurement. The reference point is measured instead, by leak_check.py: a scenario leaks
+when content reaching an unauthorised recipient still carries an injected identifier, and
+the same rule scores every arm. Measured on untouched traffic: 120 of 192 attack scenarios
+leak, not 192.
+
 Then it reports, overall and broken down by leak-style / domain / family:
-  * detection rate       (of oracle-attacks, fraction detected in monitor)
-  * leak-prevention rate (of oracle-attacks, fraction stopped in enforce)
-  * false-positive rate  (of oracle-benign, fraction wrongly stopped in enforce)
+  * detection rate       (of labelled attacks, fraction detected in monitor)
+  * leak-prevention rate (of labelled attacks, fraction stopped in enforce)
+  * false-positive rate  (of labelled benign, fraction wrongly stopped in enforce)
   * latency              (avg + p95 per hop, from the tamper-evident audit log)
 
 Presidio is OFF by default so the run is deterministic and dependency-free (Info-flow's
@@ -33,7 +39,7 @@ from haris.state.graph_store import GraphStateStore
 from demo_app.eval.domains import DOMAINS, build_agents
 from demo_app.eval.generate import Scenario, generate
 from demo_app.eval.leak_check import egresses, leaked
-from demo_app.eval.oracle import oracle_should_stop
+from demo_app.eval.oracle import label_consistency_check
 
 STOPPED = {"block", "redact"}
 
@@ -67,8 +73,13 @@ def _run_arm(scn: Scenario, agents: list, mode: Mode, want_latency: bool = False
 
 
 # Difficulty gradient for the data-exfiltration threat — how hard the attacker works to
-# hide the leaked identifier. This turns the (otherwise binary) per-class result into a
-# graceful degradation curve: easy -> medium -> hard.
+# hide the leaked identifier.
+#
+# HONEST STATE (measured 2026-08-24): this is not currently a gradient. "medium" was our
+# matcher being brittle about reformatted identifiers and now sits at 100% after the
+# normalisation fix; "hard" carries no injected identifier at all, so there is nothing in
+# those messages to detect. Rebuilding a real curve is tasks M2 (graded obfuscation ladder)
+# and M3 (paraphrases that genuinely retain the secret). Until then, read only easy/medium.
 _DIFFICULTY = {
     "external_verbatim": "easy",     # full record copied (exact token present)
     "external_derived": "easy",      # exact identifier reused
@@ -79,7 +90,7 @@ _DIFFICULTY = {
 
 def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     agents = build_agents(DOMAINS[scn.domain], include_secrets)
-    oracle_attack, _ = oracle_should_stop(scn)
+    label_attack, _ = label_consistency_check(scn)
     # NOTE: there is no "without Haris" arm. Running an EMPTY agent list in monitor mode
     # cannot stop anything -- most_restrictive([]) is ALLOW and monitor clamps above FLAG
     # anyway -- so its output was a constant, not a measurement. That every attack scenario
@@ -99,7 +110,7 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
         "difficulty": _DIFFICULTY.get(scn.family),   # None for non-exfiltration threats
-        "oracle_attack": oracle_attack,
+        "label_attack": label_attack,
         "detected": detected, "stopped": stopped,
         # measured outcomes, independent of any detector's verdict
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
@@ -130,8 +141,8 @@ def _pct(x) -> str:
 
 
 def report(records: list[dict]) -> None:
-    attacks = [r for r in records if r["oracle_attack"]]
-    benign = [r for r in records if not r["oracle_attack"]]
+    attacks = [r for r in records if r["label_attack"]]
+    benign = [r for r in records if not r["label_attack"]]
     all_lat = sorted(x for r in records for x in r["latencies"])
 
     prevented = sum(1 for r in attacks if r["stopped"])
@@ -169,22 +180,24 @@ def report(records: list[dict]) -> None:
             groups[r[key]].append(r)
         for g in sorted(groups):
             rs = groups[g]
-            atk = [r for r in rs if r["oracle_attack"]]
-            ben = [r for r in rs if not r["oracle_attack"]]
+            atk = [r for r in rs if r["label_attack"]]
+            ben = [r for r in rs if not r["label_attack"]]
             det = _pct(_rate(atk, "detected")) if atk else "—"
             prev = _pct(_rate(atk, "stopped")) if atk else "—"
             fp = _pct(_rate(ben, "stopped")) if ben else "—"
             print(f"  {str(g):<20} detect={det:<5} prevent={prev:<5} fp={fp:<5} (n={len(rs)})")
 
-    breakdown("BY LEAK STYLE  (paraphrase = the honest gap)", "leak_style", records)
+    breakdown("BY LEAK STYLE  (paraphrase carries no identifier — see the corpus note)",
+              "leak_style", records)
     breakdown("BY DOMAIN  (consistency = generalization)", "domain", records)
     breakdown("BY TOPOLOGY  (near-flat by design: Haris judges each hop independently)",
               "topology", records)
 
-    # Difficulty gradient: detection degrades gracefully as the attacker hides the leak.
+    # Difficulty gradient — see the _DIFFICULTY note above for its current honest state.
     diff = [r for r in records if r.get("difficulty")]
     if diff:
-        print("\nBY DIFFICULTY  (data-exfiltration: how hard the attacker hides the leak)")
+        print("\nBY DIFFICULTY  (easy/medium are real; the 'hard' rung is not yet a "
+              "genuine leak — task M3)")
         by = defaultdict(list)
         for r in diff:
             by[r["difficulty"]].append(r)

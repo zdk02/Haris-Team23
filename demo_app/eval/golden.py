@@ -45,14 +45,14 @@ def compute(records: list[dict]) -> dict[str, Any]:
         rows = [r for r in records if r["family"] == fam]
         families[fam] = {
             "n": len(rows),
-            "is_attack": bool(rows[0]["oracle_attack"]),
+            "is_attack": bool(rows[0]["label_attack"]),
             "detected": _rate(rows, "detected"),
             "stopped": _rate(rows, "stopped"),
         }
     return {
         "scenarios": len(records),
-        "attacks": sum(1 for r in records if r["oracle_attack"]),
-        "benign": sum(1 for r in records if not r["oracle_attack"]),
+        "attacks": sum(1 for r in records if r["label_attack"]),
+        "benign": sum(1 for r in records if not r["label_attack"]),
         "families": families,
     }
 
