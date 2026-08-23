@@ -2,8 +2,15 @@
 
 Turns the `Domain` specs (Step 3) into hundreds of labelled multi-agent SCENARIOS —
 deterministically, with a fixed seed. Each scenario is a list of `Message`s (scripted
-agent traffic in the frozen schema) plus a ground-truth record the independent oracle
-(Step 8) and the runner (Step 9) consume.
+agent traffic in the frozen schema) plus a ground-truth record that the label-consistency
+check (`oracle.py`) and the runner (Step 9) consume.
+
+The labeller was called an "independent oracle" here and in Step 8 of the plan. That claim
+was retracted on 2026-08-23: it re-derives every label from metadata this generator itself
+writes, and disagrees with the generator 0 times in 312 — it is structurally incapable of
+disagreeing. It is a self-consistency check on the traffic, not independent adjudication.
+Independence is bought separately, from a tool that knows nothing about this project, in
+`demo_app/eval/external_check.py` (detect-secrets, 24/312 confirmed). See EVAL_DESIGN.md.
 
 Folds in:
   * Step 5 — secret injection: each scenario carries a synthetic secret with a KNOWN
@@ -19,6 +26,7 @@ Folds in:
 
 Families map to the agent each one exercises:
   external_verbatim/derived  -> Info-flow (taint) + Secrets/PII        [caught]
+  external_obfuscated        -> Info-flow, after normalized matching     [caught]
   external_paraphrase        -> nothing in scope                        [MISSED — the gap]
   external_credential        -> Secrets/PII (+ taint)                   [caught]
   policy_egress              -> Authorization (sensitive type -> external) [caught]
@@ -147,8 +155,14 @@ def _content(style: str, s: Secret) -> str:
 
 
 def _obfuscate(s: str) -> str:
-    """Trivial reformatting (a hard attack): defeats exact-match taint but not the oracle's
-    normalized matching, so the leak is real yet Haris's coarse detector misses it."""
+    """Trivial reformatting: 'MRN-4821' -> 'MRN - 4821'.
+
+    This DEFEATED taint matching when the match was `tag.lower() in content.lower()`, and
+    the family was reported at 42% detection as a difficulty tier. Normalizing both sides
+    before matching (task C1) closed it: measured 100% as of 2026-08-23. What looked like a
+    hard attack was a brittle matcher, so this family is no longer evidence of difficulty —
+    a real graded ladder is task M2. Kept because the before/after delta is a result.
+    """
     return s.replace("-", " - ")
 
 
@@ -219,8 +233,11 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(_flow(domain, sid, secret, topology, style="paraphrase",
                          egress_type="note", recipient=ext), True, "paraphrase", True)
     if family == "external_obfuscated":
-        # hard attack: leak a reformatted identifier that exact-match taint misses.
-        # ~half also slip the exact name (Haris still catches those) -> partial detection.
+        # Leak a reformatted identifier. `fully_hard` decides whether the exact name is
+        # also slipped in; since C1 both branches are caught, so this coin flip no longer
+        # splits the family into easy/hard halves. It is a corpus artifact awaiting task
+        # M1 (delete the coin flip) and M2 (a real obfuscation ladder), NOT a difficulty
+        # control -- do not report it as one.
         fully_hard = fake.boolean()
         content = f"Ref {_obfuscate(secret.record_id)} — please proceed with the case."
         if not fully_hard:
@@ -352,6 +369,7 @@ def _smoke() -> None:
     expect_stopped = {
         "external_verbatim": True, "external_derived": True, "external_credential": True,
         "policy_egress": True, "subject_mismatch": True, "spoof": True,
+        "external_obfuscated": True,           # 42% before C1 normalization, 100% after
         "external_paraphrase": False,          # the honest miss
         "internal_derived": False, "internal_clean": False, "near_miss_benign": False,
         "same_subject": False,

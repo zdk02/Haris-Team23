@@ -1,0 +1,195 @@
+{
+  "scenarios": 312,
+  "attacks": 192,
+  "benign": 120,
+  "detection_rate": 0.875,
+  "leak_prevention_rate": 0.875,
+  "false_positive_rate": 0.2,
+  "utility_rate": 0.8,
+  "latency_avg_ms": 0.0945,
+  "latency_p95_ms": 0.316,
+  "by_leak_style": {
+    "verbatim": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "derived": {
+      "n": 120,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": 0.3333
+    },
+    "paraphrase": {
+      "n": 24,
+      "detection": 0.0,
+      "prevention": 0.0,
+      "false_positive": null
+    },
+    "obfuscated": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "credential": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "none": {
+      "n": 96,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": 0.0
+    }
+  },
+  "by_domain": {
+    "hospital": {
+      "n": 78,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    },
+    "education": {
+      "n": 78,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    },
+    "finance": {
+      "n": 78,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    },
+    "hr": {
+      "n": 78,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    }
+  },
+  "by_topology": {
+    "chain": {
+      "n": 104,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    },
+    "star": {
+      "n": 104,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    },
+    "branch": {
+      "n": 104,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.2
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "n": 48,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "hard": {
+      "n": 24,
+      "detection": 0.0,
+      "prevention": 0.0,
+      "false_positive": null
+    },
+    "medium": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    }
+  },
+  "by_family": {
+    "external_verbatim": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "external_derived": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "external_paraphrase": {
+      "n": 24,
+      "detection": 0.0,
+      "prevention": 0.0,
+      "false_positive": null
+    },
+    "external_obfuscated": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "external_credential": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "policy_egress": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "subject_mismatch": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "spoof": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "internal_derived": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 0.0
+    },
+    "internal_clean": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 0.0
+    },
+    "near_miss_benign": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 0.0
+    },
+    "authorized_external": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 1.0
+    },
+    "same_subject": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 0.0
+    }
+  }
+}

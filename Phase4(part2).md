@@ -1,5 +1,29 @@
 # Haris — Team Work Plan (finalization → Aug 31 submission)
 
+> **HISTORICAL DOCUMENT — written 2026-08-04. Kept, not corrected.**
+>
+> This is the plan as we wrote it at the start of finalization. It is preserved because the
+> step numbers it defines (Step 4, Step 8, Step 12, …) are referenced from comments and
+> docstrings across the codebase, and because the difference between what we planned and
+> what we shipped is itself part of the record.
+>
+> **It is superseded wherever it conflicts with `SCOPE_FREEZE.md` (2026-08-21) and
+> `EVAL_DESIGN.md`.** Two claims in particular were retracted after we measured them, and
+> both are flagged inline below:
+>
+> * **Decision 4 / Step 8 — "the ground-truth oracle is independent of Haris."** Retracted
+>   2026-08-23. It re-derives every label from metadata the generator itself writes and
+>   disagrees with the generator 0 times in 312 — it is structurally incapable of
+>   disagreeing. It is now `label_consistency_check`. Genuine independence is bought
+>   separately in `demo_app/eval/external_check.py` (`detect-secrets`, 24/312 confirmed).
+> * **Decision 8 / Step 9 — the "no-Haris" baseline arm.** Removed 2026-08-23. That arm ran
+>   an empty agent list in monitor mode, where the result is fixed before the run starts —
+>   a constant, not a measurement. Replaced by a measured unmediated reference over the
+>   corpus (120 of 192, not 100%).
+>
+> Several steps were also **cut** on 2026-08-21 under the scope freeze. Those are flagged
+> inline too. `SCOPE_FREEZE.md` is the authority on what is in and out.
+
 **This week (Aug 4–10):** simulation-based evaluation + deployment starting point + Streamlit organization.
 **Next week & buffer (Aug 11–31):** complete deployment, finalize the evaluation, finish the UI, write the
 report, harden, and do the final reproducibility check.
@@ -22,18 +46,53 @@ re-open them mid-build.
 4. **The ground-truth oracle is independent of Haris.** It labels leak/no-leak from the injected facts (did
    the known secret reach an unauthorized sink?), NEVER from Haris's own decision logic. If the oracle
    reuses Haris's rules, the results are worthless.
+
+   > **RETRACTED 2026-08-23.** We wrote this rule and then broke it. The labeller reads the
+   > same facts the generator wrote, and its checks mirror Haris's own agents — measured, it
+   > disagrees with the generator 0 times in 312. The last sentence above is correct and it
+   > convicts the implementation, not the rule. What the check *is* good for is confirming
+   > that the generated traffic realises the intended label, so it is now named
+   > `label_consistency_check` and described that way in `EVAL_DESIGN.md`. Its checks are
+   > proven live by mutation tests (`tests/test_label_check_mutation.py`), and independent
+   > confirmation is bought from a third-party tool that knows nothing about this project
+   > (`demo_app/eval/external_check.py`).
+
 5. **We do NOT aim for 100% detection / 0% false positives.** A perfect score on a broad eval reads as
    rigged. We deliberately build a difficulty spectrum and report per-domain / per-class breakdowns so the
    numbers are high but realistic, with visible, explainable edges.
+
+   > **Note 2026-08-23.** This decision was right in intent and wrong in execution: the
+   > `authorized_external` false positives came from withholding configuration from Haris
+   > (the trusted partner was never passed to `internal_domains`), not from a genuine
+   > detector limit. Manufacturing a weakness to avoid a suspicious score is the same
+   > failure as manufacturing a strength. Fixing it is tracked in `SCOPE_FREEZE.md`.
+
 6. **Semantic/paraphrase AGENT (the defense) is out of scope for this submission.** BUT we INCLUDE a
    paraphrase leak class in the evaluation as a *measured miss* — because we author those leaks, their
    ground truth is still deterministic, so Haris missing them gives us an honest false-negative number and
    motivates the semantic agent as future work. "Paraphrase agent" and "semantic agent" are the same
    planned component — not building it now.
+
+   > **Qualified 2026-08-24.** The paraphrase family as generated carries no injected
+   > identifier at all, so there is nothing in those messages to detect and a correct
+   > detector *should* pass them. Scoring them as missed leaks overstated the corpus's
+   > difficulty. The class stays, but it needs paraphrases that genuinely retain the secret
+   > before it measures anything.
+
 7. **The core evaluation is fully deterministic — no LLM judge.** The only place an LLM judge appears is the
-   small, optional real-LLM realism slice next week.
+   small, optional real-LLM realism slice next week. *(That slice was cut — see Step 19.)*
 8. **Every scenario runs in three arms:** no-Haris (baseline leak rate) / Haris-monitor (detect only) /
    Haris-enforce (prevent).
+
+   > **AMENDED 2026-08-23 — two arms, not three.** The no-Haris arm was an empty agent list
+   > in monitor mode: `most_restrictive([])` is ALLOW and monitor clamps anything above
+   > FLAG, so it could not have stopped anything and its "100% leaks" headline was a
+   > constant we reported as a finding. Removed. The corpus's unmediated leak rate is now
+   > *measured* by outcome (`demo_app/eval/leak_check.py`) and comes out at 120 of 192, not
+   > 192 of 192 — 48 scenarios never egress and 24 carry no identifier. Comparison arms that
+   > are genuinely not Haris (a content scanner, a metadata heuristic) are a separate piece
+   > of work; see `SCOPE_FREEZE.md`.
+
 9. **Do NOT rebuild what already exists:** the five agents, orchestrator, policy engine, enforce mode,
    reliability guard, two-tier logging, tamper-evident audit log, notification system (Notifier + webhook +
    health check + CI alerts + dashboard banner), the dashboard, and the 124 tests are all done.
@@ -53,6 +112,9 @@ re-open them mid-build.
   independent-oracle rule, the difficulty spectrum, the paraphrase-as-measured-miss rule, and the metrics.
   Copy the locked decisions above so everyone builds to the same shape.
 - **Done when:** committed and the team has read it.
+
+> **Superseded.** `EVAL_DESIGN.md` has since been rewritten and is the current authority.
+> Read it, not this step: the arms, the labeller and the paraphrase rule all changed.
 
 ### Step 2 — Build the `Domain` template structure
 - **Approach:** a small dataclass holding a domain's fields — agent roles, internal trust boundary (e.g.
@@ -85,6 +147,11 @@ re-open them mid-build.
   want. For detection: hard attacks (partial identifiers, unusual routing, obfuscation).
 - **Done when:** the generated set contains labeled easy AND hard cases on both sides.
 
+> **Partly invalidated 2026-08-23.** The obfuscation tier was not a difficulty tier — it
+> defeated our *matcher*, not our design. Normalizing taint matching took it from 42% to
+> 100%, which means the "medium" rung was measuring a brittle substring comparison. A real
+> graded ladder still has to be built.
+
 ### Step 7 — Add the paraphrase leak class as a measured miss
 - **Approach:** generate reworded leaks from known secrets (no literal token). Because we author them, they
   are labeled leaks by construction — ground truth stays deterministic, no LLM judge. We expect Haris to
@@ -93,17 +160,30 @@ re-open them mid-build.
 - **Done when:** paraphrase-class scenarios exist and are labeled, and the runner records Haris's (mostly
   missing) result on them.
 
+> **See the note on decision 6.** As built, these messages contain no secret to miss.
+
 ### Step 8 — Build the independent ground-truth oracle
 - **Approach:** label each scenario leak/no-leak purely from the injected facts + observed sink traffic —
   did the known secret (or a reworded form we authored) reach a recipient outside the domain's allow-list,
   or a wrong subject's session? Never consult Haris's decision.
 - **Done when:** the oracle labels every scenario, verified independent by running it with Haris disabled.
 
+> **RETRACTED 2026-08-23 — see decision 4.** The "Done when" was unachievable as written:
+> running the labeller with Haris disabled proves it does not consult Haris's *runtime
+> decision*, which was never the risk. The risk was that it re-implements Haris's *rules*
+> over the generator's own metadata — which it does. Renamed `label_consistency_check`
+> (`demo_app/eval/oracle.py`). External confirmation lives in
+> `demo_app/eval/external_check.py`. This is the single most important correction in the
+> project and it belongs in the report, not just here.
+
 ### Step 9 — Build the three-arm runner
 - **Approach:** for each scenario run it through (1) no-Haris, (2) Haris-monitor, (3) Haris-enforce, feeding
   messages through the existing `Orchestrator` exactly like `eval_harness.py` does. Write every decision to
   the tamper-evident audit log.
 - **Done when:** one command runs all scenarios through all three arms and outputs a results table.
+
+> **AMENDED 2026-08-23 — two arms.** See decision 8. `demo_app/eval/runner.py` documents at
+> the top why the third arm is absent.
 
 ### Step 10 — Parameterize per-domain agent config
 - **Approach:** when building the orchestrator for a scenario, pass that domain's internal boundary and
@@ -118,6 +198,11 @@ re-open them mid-build.
   topology, and leak class — including the paraphrase class shown separately as the known gap.
 - **Done when:** a results report (JSON + console) shows overall numbers AND breakdowns, with realistic
   (not perfect) figures.
+
+> **Amended.** Leak prevention is now reported over the scenarios that *actually leak*
+> unmediated, separately from policy violations that never egress — they are different
+> claims and merging them inflated the denominator. The topology breakdown is being dropped
+> from the report (see Step 20b).
 
 ### Step 12 — One-command reproducibility
 - **Approach:** wire a single entry point (`python -m demo_app.eval.simulate`) with a fixed seed so the same
@@ -178,10 +263,17 @@ re-open them mid-build.
 - **Done when:** the slice runs and its numbers are reported alongside (not merged into) the deterministic
   core.
 
+> **CUT 2026-08-21.** Days of work, and it introduces an LLM judge we would then have to
+> defend. The deterministic core is the stronger claim.
+
 ### Step 20 — Generate evaluation figures
 - **Approach:** use the dataviz skill. Charts: baseline vs enforce leak rate, per-domain bars, per-topology
   bars, leak-class breakdown (including the paraphrase gap), latency distribution.
 - **Done when:** report-ready figures are exported.
+
+> **Amended.** "Baseline vs enforce" no longer means the deleted no-Haris arm. The
+> per-topology chart is dropped: three labels over two distinct shapes is not a defensible
+> axis (**Step 20b — deepening the topologies — CUT 2026-08-21**).
 
 ## Complete the deployment (all by Aug 31)
 
@@ -190,15 +282,28 @@ re-open them mid-build.
   replaying the demo in-process. This is the real "backend connection."
 - **Done when:** the dashboard renders a persisted run, not an inline replay.
 
+> **Prerequisite, found 2026-08-22.** The chain had to be seeded from the last record on
+> disk first: without it the first record written after any restart carried `prev_hash=""`,
+> the chain failed verification, and in enforce mode the health probe then refused to run
+> the pipeline at all. Persisting the log before fixing that would have bricked the demo on
+> its second boot. Fixed in `haris/audit.py`.
+
 ### Step 22 — Split Haris into its own service
 - **Approach:** a thin service boundary/API so the demo app and dashboard call Haris as a separate,
   isolated, least-privilege service (the "service" product form).
 - **Done when:** Haris runs as its own container the others depend on.
 
+> **Reduced 2026-08-21.** A minimal `POST /v1/inspect` + `GET /health`. `/health` is needed
+> for the ECS target group regardless. The dashboard is **not** rewired to call it — it
+> keeps reading the persisted log. Half the work, no judge-visible loss.
+
 ### Step 23 — Deploy to AWS
 - **Approach:** push images to ECS/Fargate (Bedrock for any model calls); scoped IAM roles for isolation.
   The reachable URL is the operator dashboard.
 - **Done when:** mentors can open the live dashboard URL and the eval reproduces there.
+
+> **Timebox 2026-08-21: TLS/ALB by end of Mon Aug 24**, or deploy on the ALB's own DNS name
+> over HTTP and document it as a limitation.
 
 ### Step 24 — Real email alerting (SES)
 - **Approach:** wire an SES channel into the existing Notifier; smoke-test. This is the one notification
@@ -212,9 +317,15 @@ re-open them mid-build.
   the app-agnostic claim tangible on screen.
 - **Done when:** the dashboard can show a chosen domain's simulation run.
 
+> **CUT 2026-08-21.** The graph uses hardcoded pixel positions; adding domains collides the
+> nodes. A day of work for twenty seconds of attention.
+
 ### Step 26 — Who-catches-what matrix
 - **Approach:** add the agent × threat matrix from the deck, mapped onto the simulation results.
 - **Done when:** the matrix renders and matches the eval numbers.
+
+> **CUT from the UI 2026-08-21** — it goes in the report as a static table. Same
+> information, 5% of the cost.
 
 ## Write the report (written deliverable)
 
@@ -227,6 +338,11 @@ re-open them mid-build.
 - **Approach:** refresh `THREAT_MODEL.md` into threat → answer → staged-attack rows; lift into the report.
 - **Done when:** section drafted from the refreshed threat model.
 
+> **Added 2026-08-22.** The refresh now includes §2.3, the trusted-metadata boundary — the
+> assumption that most security decisions key off fields supplied by the party the threat
+> model treats as compromised. It is stated rather than buried, with the measured cost of
+> the strict alternative. Expect it to be the first thing a security reviewer asks about.
+
 ### Step 29 — System design section
 - **Approach:** lift the high/low-level design + per-agent mechanisms from the deck; include the
   library/service/dashboard product shape.
@@ -237,11 +353,21 @@ re-open them mid-build.
   log, and the notification system.
 - **Done when:** section drafted.
 
+> **Wording 2026-08-22.** "Tamper-evident" is accurate only with `HARIS_AUDIT_KEY` set, and
+> truncation is detectable only against a head hash held outside the log. Both limits are
+> now stated in `haris/audit.py` and `THREAT_MODEL.md`, and the report must carry the same
+> qualifications rather than the unqualified phrase.
+
 ### Step 31 — Evaluation section (the heart)
 - **Approach:** write up the simulation methodology, the independent oracle, the three arms, and the
   results/figures — including the honest realistic numbers and the paraphrase gap. This is what the grade
   hinges on; give it the most care.
 - **Done when:** section drafted with final figures embedded.
+
+> **Amended.** Not "the independent oracle" and not "the three arms" — see decisions 4 and
+> 8. The section should describe the label-consistency check honestly, name what external
+> confirmation was and was not available, and report leak prevention separately from
+> policy-violation detection.
 
 ### Step 32 — Related work section
 - **Approach:** position G-Safeguard (topology axis + complementary defense), MAScope (justifies our
@@ -253,6 +379,10 @@ re-open them mid-build.
   plus no injection detector, bearer-token identity, partial self-protection, second framework (CrewAI),
   full AWS/IAM.
 - **Done when:** section drafted, honest and quantified.
+
+> **Note.** CrewAI is future work only. The dashboard previously advertised a CrewAI adapter
+> as available; the only occurrence of the word in the codebase was that string, and it was
+> removed on 2026-08-22.
 
 ### Step 34 — Assemble + export as Word
 - **Approach:** assemble all sections and export via the docx skill once results/figures are final.
@@ -271,11 +401,19 @@ re-open them mid-build.
   ask; have the answer ready.
 - **Done when:** the decision is made and reflected in the report.
 
+> **Decided 2026-08-21: scoped out, deliberately.** Injection is a per-message content
+> problem that per-agent guardrails already address. Our contribution is the cross-agent
+> layer they structurally cannot provide, and composing Haris with an input guardrail is the
+> correct architecture. That is a better answer than a weak sixth detector.
+
 ### Step 37 — (Optional/stretch) monitor-only semantic-agent prototype
 - **Approach:** ONLY if everything else is done. A basic embedding-similarity check as a monitor-only 6th
   agent, off by default, out of the enforce path and out of the headline numbers — just to show a first cut
   at closing the paraphrase gap. Drop it with zero damage if time runs out.
 - **Done when:** (if attempted) it flags one reworded leak in a demo, clearly labeled experimental.
+
+> **CUT 2026-08-21.** It would be untested at submission, which is worse than absent, and it
+> would replace a documented ceiling with an undefended claim.
 
 ## Final proof
 

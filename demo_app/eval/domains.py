@@ -61,7 +61,7 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
 
     if include_secrets:
         from haris.agents.secrets_pii import SecretsPIIAgent
-        agents.append(SecretsPIIAgent())
+        agents.append(SecretsPIIAgent(internal_domains=(domain.internal_domain,)))
 
     agents.append(AuthorizationAgent(
         rules=list(domain.rules),
