@@ -109,14 +109,26 @@ so no section is orphaned:
 
 ## Hard timebox
 
-**AWS TLS/ALB: end of Mon Aug 24.** If the HTTPS URL is not working by then, we deploy on
-the ALB's own DNS name over HTTP and document it as a limitation. Losing three days of
-report-writing to certificate validation is the worst outcome available to us.
+**AWS TLS/ALB: end of Mon Aug 24 — MET on Sun 23 Aug.** The dashboard is live at
+https://haris-monitor.com with an ACM certificate, an HTTP→HTTPS redirect and a Route 53
+alias record, a day ahead of the deadline. No fallback was used.
 
+**The documented fallback is withdrawn.** It was "deploy on the ALB's own DNS name over
+HTTP and document it as a limitation". Plain HTTP has since been shown *unsafe for this
+application*: an intercepting proxy on one operator's ISP relayed the WebSocket upgrade
+and the 101 response correctly, then silently discarded every frame the browser sent
+afterwards. The dashboard stayed permanently blank with no error on either side — no
+exception, no log line, a healthy target and 200 on the health endpoint throughout.
+Confirmed by loading the same URL over a phone hotspot, which rendered instantly.
+TLS resolved it, because `wss://` is opaque to the middlebox.
+
+Its failure mode is a blank page for *some* viewers and a working page for others, which
+is worse than a clean failure. If TLS ever has to come off, treat the deployment as broken
+rather than degraded.
 ---
 
 ## Changes to this file
 
 | Date | Who | What changed | Why |
 |---|---|---|---|
-| 2026-08-21 | Zeinab + teammate | Created | Nine days, two people |
+| 2026-08-23 | Batoul | Timebox met a day early; HTTP fallback withdrawn | TLS landed Sun 23. Plain `ws://` proven to fail silently through an intercepting proxy, so HTTP is not a safe fallback for this application |

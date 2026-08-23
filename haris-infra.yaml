@@ -1,0 +1,458 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Haris operator dashboard — network, load balancer, identity and compute.
+  One Fargate task behind an internet-facing ALB across two availability zones.
+  The ECR repository and the Secrets Manager secret are deliberately NOT in this
+  stack: they hold state that should outlive it, and they are created by hand so
+  they can be inspected and screenshotted for the report appendix.
+
+# ---------------------------------------------------------------------------
+# Parameters
+#
+# CertificateArn is optional on purpose. Leave it empty and the stack serves
+# plain HTTP on the load balancer's own DNS name — a complete, working
+# deployment. Supply it later and the same stack gains an HTTPS listener, an
+# HTTP->HTTPS redirect and a Route 53 alias record, with no rebuild.
+# ---------------------------------------------------------------------------
+Parameters:
+
+  ImageUri:
+    Type: String
+    Description: Full ECR image URI including tag.
+    Default: 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris:v1
+
+  DashboardSecretArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret holding the operator token. The value is
+      injected into the task at start; it never appears in this template, in the
+      image, or in version control.
+
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN in us-east-1. Empty = HTTP only on the ALB DNS name.
+
+  DomainName:
+    Type: String
+    Default: haris-monitor.com
+    Description: Apex domain. Only used when CertificateArn is supplied.
+
+  HostedZoneId:
+    Type: String
+    Default: Z03982921IDP3L3O35FKU
+    Description: Route 53 hosted zone for DomainName.
+
+  TaskCpu:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["256", "512", "1024", "2048", "4096"]
+    Description: Fargate vCPU units. 1024 = 1 vCPU.
+
+  TaskMemory:
+    Type: String
+    Default: "2048"
+    Description: >
+      Fargate memory in MiB. 2048 against a measured working set of ~198 MB is a
+      deliberate ~10x margin: a Fargate OOM kill presents as an unexplained task
+      restart loop rather than a diagnosable error.
+
+  ContainerPort:
+    Type: Number
+    Default: 8501
+    Description: Streamlit's port.
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
+
+Resources:
+
+  # =========================================================================
+  # Network
+  #
+  # Two public subnets in two availability zones, because an ALB requires
+  # subnets in at least two AZs. The task itself runs in one of them with a
+  # public IP, which is what lets it pull from ECR without a NAT gateway
+  # (~$32/month, deliberately scoped out). It is not reachable from the
+  # internet regardless — see the task security group below.
+  # =========================================================================
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: haris-vpc }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: haris-igw }]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: haris-public-a }]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: haris-public-b }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: haris-public-rt }]
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # =========================================================================
+  # Security groups
+  #
+  # The important line in this whole template is SourceSecurityGroupId on the
+  # task group. The task accepts traffic from the LOAD BALANCER'S GROUP, not
+  # from an IP range — so there is no address anyone can spoof or route from
+  # to reach port 8501. Every request must physically arrive via the ALB.
+  # =========================================================================
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public ingress to the load balancer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP (redirected to HTTPS when a certificate is attached)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+      Tags: [{ Key: Name, Value: haris-sg-alb }]
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Dashboard task - reachable only from the load balancer
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: haris-sg-task }]
+
+  TaskIngressFromAlb:
+    # Declared separately from the group so the rule can reference the ALB
+    # group without a circular dependency.
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref ContainerPort
+      ToPort: !Ref ContainerPort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Streamlit, from the ALB security group only
+
+  # =========================================================================
+  # Load balancer
+  #
+  # idle_timeout is raised to 300s because Streamlit holds a WebSocket open for
+  # the life of the page. At the 60s default, a dashboard left open while
+  # someone talks over it drops its connection and shows "Please wait...".
+  # =========================================================================
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: haris-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "300"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: haris-tg
+      VpcId: !Ref Vpc
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip              # required for Fargate / awsvpc networking
+      HealthCheckPath: /_stcore/health   # Streamlit's own endpoint
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: "200" }
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: "443"
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Condition: HasCertificate
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06   # TLS 1.2 minimum, 1.3 preferred
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  DnsRecord:
+    Condition: HasCertificate
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      # An alias, not a plain A record: the ALB's addresses change over time,
+      # and a CNAME is not legal at a zone apex.
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
+  # =========================================================================
+  # Identity
+  #
+  # Two roles, and the split matters.
+  #
+  # The EXECUTION role is assumed by the ECS agent before any of our code runs:
+  # it pulls the image, reads the secret, and writes log streams. The awslogs
+  # driver runs agent-side, which is why the CloudWatch permissions belong here
+  # and not on the task role.
+  #
+  # The TASK role is what the application's own AWS SDK calls would use. Haris
+  # makes none, so it has no policies at all. That is not an omission - the
+  # container's own credentials can call no AWS API whatsoever.
+  # =========================================================================
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/haris
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: haris-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: haris-execution
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # This single action cannot be scoped to a resource - the ECR
+              # auth token is account-wide by design. Every other action below
+              # names exactly one ARN.
+              - Sid: EcrAuthTokenCannotBeScoped
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullThisRepositoryOnly
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/haris
+              - Sid: WriteThisLogGroupOnly
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/haris:*
+              - Sid: ReadTheOperatorTokenOnly
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DashboardSecretArn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: haris-task-role
+      Description: >
+        Assumed by the application. Intentionally carries no policies: the Haris
+        dashboard makes no AWS API calls, so its credentials can do nothing.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  # =========================================================================
+  # Compute
+  # =========================================================================
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: haris-cluster
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: haris
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: dashboard
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          # No environment overrides, deliberately.
+          #
+          # The blank-dashboard fault was never a Streamlit setting. An
+          # intercepting proxy on the operator's ISP path relayed the WebSocket
+          # handshake over plaintext ws:// and then dropped every client->server
+          # frame. Two consequences, both observed: the browser's rerun BackMsg
+          # never reached the server, so no script run ever started; and the
+          # keepalive pong never came back, so uvicorn's 30s ping plus 30s pong
+          # timeout tore the socket down at exactly the 60s mark, producing an
+          # endless reconnect loop. Serving over wss:// makes the stream opaque
+          # to any such middlebox and resolves it.
+          #
+          # CORS and XSRF protection therefore stay at their secure defaults,
+          # and debug logging is off in normal operation.
+          # Resolved from Secrets Manager by the execution role at task start.
+          # The value is never in this template, the image, or version control.
+          Secrets:
+            - Name: HARIS_DASHBOARD_TOKEN
+              ValueFrom: !Ref DashboardSecretArn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: dashboard
+
+  Service:
+    Type: AWS::ECS::Service
+    # The listener must exist before the service can register with the target
+    # group; without this the stack fails on a race.
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: haris-service
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      # 180s: the task must pull a 1.32 GB image before Python starts. The app
+      # itself is ready in ~2s, but without this grace period ECS can kill the
+      # task mid-pull and loop forever with no useful error.
+      HealthCheckGracePeriodSeconds: 180
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # ENABLED is required to reach ECR without a NAT gateway. The task is
+          # still unreachable from the internet: the security group admits only
+          # the ALB's group.
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: dashboard
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+
+  LoadBalancerDns:
+    Description: The ALB's own hostname - works before any DNS or TLS exists.
+    Value: !GetAtt LoadBalancer.DNSName
+
+  HttpUrl:
+    Description: Open this to verify the deployment before TLS is attached.
+    Value: !Sub http://${LoadBalancer.DNSName}
+
+  HttpsUrl:
+    Condition: HasCertificate
+    Description: The public dashboard URL.
+    Value: !Sub https://${DomainName}
+
+  ClusterName:
+    Value: !Ref Cluster
+
+  ServiceName:
+    Value: !GetAtt Service.Name
+
+  ExecutionRoleArn:
+    Description: Screenshot this role's policy for Appendix B.
+    Value: !GetAtt ExecutionRole.Arn
+
+  TaskRoleArn:
+    Description: >
+      Screenshot this one too - an empty policy list is the least-privilege
+      result, not a missing step.
+    Value: !GetAtt TaskRole.Arn
