@@ -229,3 +229,55 @@ def test_concurrent_writes_keep_the_chain_valid():
         t.join()
     assert len(log) == 300
     assert log.verify_chain() is True
+
+# ---- B2 completed: the reference that makes truncation detectable ------------
+
+def test_checkpoint_reports_the_head_and_count():
+    """The two values an operator holds OUTSIDE the log. Without them, truncation is
+    undetectable: dropping records off the end leaves a shorter chain that still verifies."""
+    log = AuditLog(key=b"k")
+    orch = _orch(log)
+    for _ in range(3):
+        orch.process(_msg())
+    cp = log.checkpoint()
+    assert cp == {"head": log.head(), "count": 3}
+    assert log.verify_checkpoint(cp) is True
+
+
+def test_verify_checkpoint_catches_truncation(tmp_path):
+    """The point of the whole mechanism, end to end: a truncated log still verifies against
+    itself and fails against a checkpoint taken before the truncation."""
+    p = tmp_path / "audit.jsonl"
+    log = AuditLog(path=str(p), key=b"k")
+    orch = _orch(log)
+    for _ in range(3):
+        orch.process(_msg())
+    cp = log.checkpoint()                       # operator keeps this elsewhere
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    p.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")   # attacker truncates
+
+    reloaded = AuditLog.load_jsonl(str(p), key=b"k")
+    assert reloaded.verify_chain() is True                  # internally consistent...
+    assert reloaded.verify_checkpoint(cp) is False          # ...but shorter than we recorded
+
+
+def test_checkpoints_reach_the_operational_log(caplog):
+    """Checkpoints are emitted to the OPERATIONAL stream, never into the audit log itself.
+    That separation is what puts the reference beyond the reach of whoever can write the
+    audit file."""
+    import logging
+    log = AuditLog(checkpoint_every=2)
+    orch = _orch(log)
+    with caplog.at_level(logging.INFO, logger="haris.audit.checkpoint"):
+        for _ in range(4):
+            orch.process(_msg())
+    emitted = [r for r in caplog.records if r.name == "haris.audit.checkpoint"]
+    assert len(emitted) == 2                       # after record 2 and record 4
+    assert "count=4" in emitted[-1].getMessage()
+
+
+def test_checkpoint_emission_can_be_disabled():
+    log = AuditLog(checkpoint_every=0)
+    _orch(log).process(_msg())
+    assert log.checkpoint()["count"] == 1          # the method still works

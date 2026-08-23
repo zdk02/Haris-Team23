@@ -37,8 +37,10 @@ from haris.schemas.decision import HarisBlocked
 from haris.schemas.policy import Mode, Policy
 from haris.state.graph_store import GraphStateStore
 from haris.state.memory import InMemoryStateStore
+from haris.audit import AuditLog
 from haris.notify import Notifier
-from haris.notify.health import HealthCheck, agents_present_probe, state_store_probe
+from haris.notify.health import (HealthCheck, agents_present_probe, audit_chain_probe,
+                                 state_store_probe)
 from haris.notify.channels import WebhookChannel
 
 
@@ -116,6 +118,8 @@ def run_secured(
     include_secrets: bool = True,
     thresholds: Optional[dict[str, float]] = None,
     agents: Optional[list] = None,
+    audit_log: Optional[AuditLog] = None,
+    audit_key: Optional[bytes] = None,
 ) -> dict[str, Any]:
     """Run one hospital scenario through the FULL secured pipeline.
 
@@ -133,6 +137,8 @@ def run_secured(
       decisions      -> haris.decisions: the Decision for every hop that completed, in order
       store          -> the GraphStateStore (has .graph / lineage for the dashboard)
       haris          -> the HarisLangGraph wrapper (observability side-channel)
+      audit          -> the AuditLog for this run; audit.checkpoint() gives the (head,
+                        count) pair an operator holds outside the log to detect truncation
     """
     store = GraphStateStore()
     policy = Policy(mode=mode, thresholds=thresholds or {})
@@ -140,14 +146,28 @@ def run_secured(
 
     # Phase 4: notifier first, so the orchestrator can push crash/block alerts through it.
     notifier = Notifier(channels=[WebhookChannel()])
+
+    # The security audit log, wired into the SHIPPED path. Previously it existed, was
+    # tested, and was documented in THREAT_MODEL.md -- and was created only by the
+    # dashboard and the evaluation, so nothing the real pipeline did was ever recorded.
+    # `store_delivered_content` is left at its safe default: hashes and metadata only.
+    # `checkpoint_every=1` emits (head, count) to the operational log on every record, so
+    # the reference needed to detect truncation lands somewhere the audit file's writer
+    # does not control. A deployment sets this higher and ships that stream to CloudWatch.
+    audit = audit_log if audit_log is not None else AuditLog(key=audit_key,
+                                                             checkpoint_every=1)
+
     orchestrator = Orchestrator(state_store=store, agents=agent_list, policy=policy,
-                                notifier=notifier)
+                                audit_log=audit, notifier=notifier)
     graph, haris = build_haris_graph(orchestrator)
 
-    # Health check that notifies + drives fail-closed (task 4).
+    # Health check that notifies + drives fail-closed (task 4). The chain probe is what
+    # turns "the log is tamper-evident" from a property of the code into something the
+    # running system actually checks -- it was registered nowhere outside the tests.
     health = HealthCheck(notifier=notifier)
     health.register("agents", agents_present_probe(orchestrator))
     health.register("state_store", state_store_probe(store))
+    health.register("audit_chain", audit_chain_probe(audit))
     health.assert_serviceable(policy.mode)
 
     final: Optional[dict] = None
@@ -161,6 +181,7 @@ def run_secured(
         block_decision = exc.decision
 
     return {
+        "audit": audit,
         "final": final,
         "blocked": blocked,
         "block_decision": block_decision,

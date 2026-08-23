@@ -44,12 +44,20 @@ import hashlib
 import hmac
 import json
 import os
+import logging
 import threading
 from dataclasses import asdict, dataclass
 from typing import Optional
 
 from haris.schemas.decision import Action, Decision
 from haris.schemas.message import Message
+
+
+# Checkpoints go to the OPERATIONAL log stream, deliberately NOT to the audit log itself.
+# That separation is the whole point: an attacker who can truncate the audit file cannot
+# also reach the operator's log destination (CloudWatch, syslog, an SIEM), so the reference
+# survives to be compared against.
+_checkpoint_logger = logging.getLogger("haris.audit.checkpoint")
 
 
 def _sha256(text: str) -> str:
@@ -122,7 +130,8 @@ class AuditLog:
 
     def __init__(self, store_delivered_content: bool = False,
                  path: Optional[str] = None,
-                 key: Optional[bytes] = None) -> None:
+                 key: Optional[bytes] = None,
+                 checkpoint_every: int = 100) -> None:
         self._records: list[AuditRecord] = []
         self.store_delivered_content = store_delivered_content
         # If set, each record is also appended to this JSONL file as it is written.
@@ -135,6 +144,11 @@ class AuditLog:
         # record() is a read-modify-append across _records and the file. Without a lock,
         # two threads can read the same tip, both link to it, and the chain forks.
         self._lock = threading.Lock()
+        # How often to emit (head, count) to the operational log. Truncation leaves a
+        # shorter but internally-consistent chain, so it is detectable ONLY against a
+        # reference held outside this log -- see checkpoint(). 0 disables emission; the
+        # method stays available for a deployment that persists it another way.
+        self.checkpoint_every = checkpoint_every
         
 
     def record(self, message: Message, decision: Decision, latency_ms: float) -> AuditRecord:
@@ -176,7 +190,32 @@ class AuditLog:
             if self.path:
                 with open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(rec.as_dict()) + "\n")
+            count = len(self._records)
+            due = self.checkpoint_every and count % self.checkpoint_every == 0
+            cp = {"head": rec.entry_hash, "count": count} if due else None
+        # Emitted OUTSIDE the lock: logging can block on I/O and the chain must not wait.
+        if cp is not None:
+            self._emit_checkpoint(cp)
         return rec
+
+    def checkpoint(self) -> dict:
+        """The two values truncation detection needs: the chain's tip and its length.
+
+        Store this somewhere the audit log's writer cannot reach. Dropping records off the
+        END leaves a chain that still verifies internally, so no check inside the file can
+        reveal the loss -- only a comparison against an outside reference can.
+        """
+        with self._lock:
+            return {"head": self.head(), "count": len(self._records)}
+
+    def _emit_checkpoint(self, cp: dict) -> None:
+        _checkpoint_logger.info("HARIS audit checkpoint | count=%d | head=%s",
+                                cp["count"], cp["head"])
+
+    def verify_checkpoint(self, cp: dict) -> bool:
+        """Verify the chain against a checkpoint taken earlier and held elsewhere."""
+        return self.verify_chain(expected_head=cp.get("head"),
+                                 expected_count=cp.get("count"))
 
     def records(self) -> list[AuditRecord]:
         return list(self._records)

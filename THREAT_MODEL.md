@@ -55,8 +55,12 @@ every message, so a breach of Haris is worse than any single leak. We therefore:
   key configured (`HARIS_AUDIT_KEY`) each link is an HMAC, so an attacker who reaches the
   log cannot rewrite it or forge new entries without detection. Two honest limits: dropping
   records from the *end* leaves a valid shorter chain, so truncation is caught only against
-  a head hash stored outside the log; and an attacker who can execute code inside Haris can
-  read the key. Write-once storage is the deployment-era answer to both.
+  a reference stored outside the log. `AuditLog.checkpoint()` returns that reference — the
+  chain head and the record count — and the shipped pipeline emits it to the OPERATIONAL
+  log stream, a different destination from the audit file, so whoever can truncate the file
+  cannot also rewrite the reference; `verify_checkpoint()` compares them. An attacker who
+  can execute code inside Haris can still read the HMAC key. Write-once storage is the
+  deployment-era answer to that.
 - **treat inspected content as untrusted** — Haris's checks are deterministic detectors, not
   an LLM being fed the content as instructions, so a message can't prompt-inject Haris;
 - **gate who can read the audit log** — the dashboard requires an operator token.
