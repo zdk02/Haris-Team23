@@ -48,8 +48,12 @@ class IdentityAgent(SecurityAgent):
             return self._block(
                 f"unregistered sender '{message.sender}' — no verifiable identity")
 
-        # Constant-time compare so a wrong token can't be discovered by timing.
-        if provided is not None and hmac.compare_digest(str(provided), str(expected)):
+        # Constant-time compare so a wrong token can't be discovered by timing. Compare
+        # BYTES: compare_digest on str operands requires both to be ASCII-only and raises
+        # TypeError otherwise, so a non-ASCII token would crash into the reliability guard
+        # instead of being rejected.
+        if provided is not None and hmac.compare_digest(
+                str(provided).encode("utf-8"), str(expected).encode("utf-8")):
             return self._pass(f"sender '{message.sender}' identity verified")
 
         why = "no identity token" if provided is None else "identity token does not match"
