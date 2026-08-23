@@ -60,28 +60,43 @@ class Orchestrator:
         self.notifier = notifier
 
     def process(self, message: Message) -> Decision:
+        # The timer starts HERE, on the first line. Recording the flow and loading the
+        # session context are work Haris does on every hop and the sender waits for, so
+        # starting the clock after them understated the middleware's real overhead --
+        # and the state store is exactly the component whose cost grows with session
+        # length, so the omission got worse as sessions got longer.
+        t0 = time.perf_counter()
+
         self.state_store.record_flow(message)
         context = self.state_store.get_context(message.session_id)
 
-        t0 = time.perf_counter()
         verdicts = [self._safe_check(agent, message, context) for agent in self.agents]
         decision = resolve(message, verdicts, self.policy)
+
+        # Everything the RECEIVER waits for: state store + agents + policy. This is the
+        # number stored in the audit record. A record cannot contain the cost of its own
+        # write, so the audit write is measured separately below.
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
+        if self.audit_log is not None:
+            self.audit_log.record(message, decision, latency_ms)
+
+        # End-to-end cost including the audit write -- operational only, never stored.
+        # Reported so the excluded step is observable rather than merely disclaimed.
+        total_ms = (time.perf_counter() - t0) * 1000.0
+
         logger.info(
-            "HARIS %s -> %s | mode=%s | action=%s | enforced=%s | latency=%.2fms | verdicts=%s",
+            "HARIS %s -> %s | mode=%s | action=%s | enforced=%s | latency=%.2fms | "
+            "total=%.2fms | verdicts=%s",
             message.sender,
             message.receiver,
             self.policy.mode.value,
             decision.action.value,
             decision.enforced,
             latency_ms,
+            total_ms,
             [(v.agent_name, v.label.value) for v in verdicts],
         )
-
-        if self.audit_log is not None:
-            self.audit_log.record(message, decision, latency_ms)
-
         # TRIGGER T4 — a leak was blocked at egress: a security event a human should review.
         # The engine only yields action == BLOCK in enforce mode (monitor clamps BLOCK to
         # FLAG in policy/engine._apply_mode), so this fires exactly when a message was really
