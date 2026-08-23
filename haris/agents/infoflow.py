@@ -39,7 +39,9 @@ agent; `test_semantic_paraphrase_is_missed_the_ceiling` keeps it honest.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
 from haris.agents.base import SecurityAgent
@@ -95,6 +97,7 @@ class InformationFlowAgent(SecurityAgent):
         min_collapse_len: int = 6,
         identifying_keys: Iterable[str] = _IDENTIFYING_KEYS,
         stopwords: Iterable[str] = _STOPWORDS,
+        tag_cache_size: int = 512,
     ) -> None:
         """
         detector: an object exposing `.analyze(text) -> results` where each result has
@@ -114,6 +117,10 @@ class InformationFlowAgent(SecurityAgent):
             Defaults to `_IDENTIFYING_KEYS`; pass your own for a non-clinical domain.
         stopwords: tokens too generic to be useful as identifier tags. Defaults to
         `_STOPWORDS`; pass your own for a non-clinical domain.
+        tag_cache_size: how many extracted tag sets to remember, keyed by the source's
+           content hash. The same PHI source is re-scanned on every hop of a session,
+           so without this the NER pass runs once per hop instead of once per source.
+           Set 0 to disable.
         """
         self.source_data_type = source_data_type
         self.min_tag_len = min_tag_len
@@ -127,6 +134,12 @@ class InformationFlowAgent(SecurityAgent):
         # punctuation ('Record ID', 'record_id' and 'recordid' all match).
         self.identifying_keys = frozenset(_norm_alnum(k) for k in identifying_keys)
         self.stopwords = frozenset(w.lower() for w in stopwords)
+        # Bounded LRU: content hash -> extracted tags. Holds no more identifier data than
+        # the state store already holds for the same session, is never persisted, and is
+        # dropped with the agent. Races between threads can only cost a duplicate
+        # extraction or a stale LRU order, never a wrong answer.
+        self.tag_cache_size = tag_cache_size
+        self._tag_cache: "OrderedDict[str, frozenset[str]]" = OrderedDict()
 
     # ------------------------------------------------------------------ #
     # SecurityAgent contract
@@ -231,9 +244,26 @@ class InformationFlowAgent(SecurityAgent):
     # Tag extraction — Module 7 detector (primary) UNION structured (fallback)
     # ------------------------------------------------------------------ #
 
-    def _extract_tags(self, record_text: str) -> set[str]:
-        tags: set[str] = set()
 
+    def _extract_tags(self, record_text: str) -> set[str]:
+        """Tags for one PHI source, memoized by content hash. The orchestrator replays the
+        whole session history on every hop, so an un-cached extractor re-runs the detector
+        once per hop per source instead of once per source."""
+        if self.tag_cache_size <= 0:
+            return self._extract_tags_uncached(record_text)
+        key = hashlib.sha256(record_text.encode("utf-8")).hexdigest()
+        hit = self._tag_cache.get(key)
+        if hit is not None:
+            self._tag_cache.move_to_end(key)          # most recently used
+            return set(hit)
+        tags = frozenset(self._extract_tags_uncached(record_text))
+        self._tag_cache[key] = tags
+        if len(self._tag_cache) > self.tag_cache_size:
+            self._tag_cache.popitem(last=False)       # evict least recently used
+        return set(tags)
+
+    def _extract_tags_uncached(self, record_text: str) -> set[str]:
+        tags: set[str] = set()
         detector_tags = self._detector_tags(record_text)
         if detector_tags is not None:
             tags |= detector_tags
@@ -244,7 +274,8 @@ class InformationFlowAgent(SecurityAgent):
         if self.use_structured_fallback or detector_tags is None:
             tags |= self._structured_tags(record_text)
 
-        return {t for t in tags if len(t) >= self.min_tag_len and t.lower() not in self.stopwords}
+        return {t for t in tags
+                if len(t) >= self.min_tag_len and t.lower() not in self.stopwords}
 
     def _detector_tags(self, text: str) -> Optional[set[str]]:
         """Tags from Module 7's PIIDetector. Returns None if no detector is available
