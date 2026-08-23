@@ -46,9 +46,10 @@ from haris.agents.base import SecurityAgent
 from haris.schemas.message import Message
 from haris.schemas.verdict import Label, Verdict
 
-# Tokens too generic to be useful identifier tags.
-_STOPWORDS = {"patient", "record", "visit", "summary", "note", "follow", "up",
-              "the", "and", "of", "advised", "reports", "over"}
+# Tokens too generic to be useful identifier tags. Clinical-flavoured because the demo
+# is clinical — overridable per deployment via the `stopwords` constructor argument.
+_STOPWORDS = frozenset({"patient", "record", "visit", "summary", "note", "follow", "up",
+                        "the", "and", "of", "advised", "reports", "over"})
 
 # Structured record fields whose VALUE identifies a person, a subject or a secret.
 # Everything else in a "Key: value" record is prose and must not become taint.
@@ -93,6 +94,7 @@ class InformationFlowAgent(SecurityAgent):
         use_structured_fallback: bool = True,
         min_collapse_len: int = 6,
         identifying_keys: Iterable[str] = _IDENTIFYING_KEYS,
+        stopwords: Iterable[str] = _STOPWORDS,
     ) -> None:
         """
         detector: an object exposing `.analyze(text) -> results` where each result has
@@ -110,6 +112,8 @@ class InformationFlowAgent(SecurityAgent):
             of anything ('DOB' would match inside 'dobbs'), so only token matching runs.
         identifying_keys: structured record fields whose value should become taint.
             Defaults to `_IDENTIFYING_KEYS`; pass your own for a non-clinical domain.
+        stopwords: tokens too generic to be useful as identifier tags. Defaults to
+        `_STOPWORDS`; pass your own for a non-clinical domain.
         """
         self.source_data_type = source_data_type
         self.min_tag_len = min_tag_len
@@ -122,6 +126,7 @@ class InformationFlowAgent(SecurityAgent):
         # Normalise the keys once so lookup is insensitive to case, spaces and
         # punctuation ('Record ID', 'record_id' and 'recordid' all match).
         self.identifying_keys = frozenset(_norm_alnum(k) for k in identifying_keys)
+        self.stopwords = frozenset(w.lower() for w in stopwords)
 
     # ------------------------------------------------------------------ #
     # SecurityAgent contract
@@ -239,7 +244,7 @@ class InformationFlowAgent(SecurityAgent):
         if self.use_structured_fallback or detector_tags is None:
             tags |= self._structured_tags(record_text)
 
-        return {t for t in tags if len(t) >= self.min_tag_len and t.lower() not in _STOPWORDS}
+        return {t for t in tags if len(t) >= self.min_tag_len and t.lower() not in self.stopwords}
 
     def _detector_tags(self, text: str) -> Optional[set[str]]:
         """Tags from Module 7's PIIDetector. Returns None if no detector is available
