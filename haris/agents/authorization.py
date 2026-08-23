@@ -25,6 +25,13 @@ The agent always emits its true verdict (e.g. BLOCK); the policy engine's mode
 gate is what downgrades it to a flag in monitor mode, so the agent stays
 mode-agnostic. `data_subject` (patient-A vs patient-B) is read but NOT enforced
 yet — reserved by the frozen Policy contract.
+
+Trust boundary (THREAT_MODEL.md §2.3): `recipient`, like every other metadata
+field, is supplied by the SENDER — the party the threat model treats as possibly
+compromised. An absent recipient is therefore ambiguous: it is both the normal
+internal agent-to-agent handoff AND what a compromised sender produces by deleting
+one key. `treat_missing_recipient_as_external` exposes that choice; see the note on
+it in __init__ for the measured cost of enforcing it in this architecture.
 """
 
 from __future__ import annotations
@@ -52,11 +59,27 @@ class AuthorizationAgent(SecurityAgent):
         internal_domain: str = DEFAULT_INTERNAL_DOMAIN,
         sensitive_types: Iterable[str] = DEFAULT_SENSITIVE_TYPES,
         default_allow: bool = True,
+        treat_missing_recipient_as_external: bool = False,
     ) -> None:
         self.rules: list[PolicyRule] = list(rules or [])
         self.internal_domain = internal_domain
         self.sensitive_types = frozenset(sensitive_types)
         self.default_allow = default_allow
+        # A message with no recipient names no destination, and the field comes from the
+        # sender - the party the threat model treats as compromised. So deleting one key
+        # switches the egress check off (THREAT_MODEL.md, trusted-metadata boundary).
+        #
+        # It CANNOT default to True here. In this architecture an absent recipient is also
+        # the normal internal agent-to-agent handoff (record_reader -> summarizer carries
+        # data_type=PHI and no recipient), so treating absence as egress blocks every
+        # session at its first hop: measured leak-prevention 100%, false positives 100%,
+        # utility 0%. Distinguishing the two cases needs to know which agents are inside
+        # the system, which Haris does not hold.
+        #
+        # Set True in a deployment whose interception adapter BINDS `recipient` from the
+        # transport, so absence really does mean "no destination was declared". That
+        # binding is the deployment-era requirement named in THREAT_MODEL.md.
+        self.treat_missing_recipient_as_external = treat_missing_recipient_as_external
 
     def check(self, message: Message, context: dict[str, Any]) -> Verdict:
         sender = message.sender
@@ -114,8 +137,12 @@ class AuthorizationAgent(SecurityAgent):
         return rule_val == "*" or rule_val == msg_val
 
     def _is_external(self, recipient: Optional[str]) -> bool:
-        # No recipient (e.g. the record_reader -> summarizer hop) is not egress.
-        return recipient is not None and not recipient.endswith(self.internal_domain)
+        # An ABSENT recipient is not evidence of an internal handoff - it is absence of
+        # evidence, and the field is supplied by the sender we treat as compromised.
+        # Deleting one key must not be a way to turn the egress check off.
+        if recipient is None:
+            return self.treat_missing_recipient_as_external
+        return not recipient.endswith(self.internal_domain)
 
     def _block(self, reason: str) -> Verdict:
         return Verdict(agent_name=self.name, label=Label.BLOCK, score=1.0, reason=reason)

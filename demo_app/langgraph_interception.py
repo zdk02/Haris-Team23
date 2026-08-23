@@ -66,6 +66,7 @@ class HarisLangGraph:
         data_type: Optional[str] = None,
         message_key: Optional[str] = None,
         state_metadata_keys: Optional[list[str]] = None,
+        recipient: Optional[str] = None,
     ) -> Callable[[dict], dict]:
         """Return a node that runs `fn`, then routes its outgoing message through Haris.
 
@@ -82,6 +83,13 @@ class HarisLangGraph:
           state_metadata_keys: extra state fields to copy into metadata so later
             agents can see them -- e.g. ["recipient", "subject"] gives the
             authorization / subject-aware agents the recipient and data_subject.
+            These come from SHARED GRAPH STATE, which the agents themselves write, so
+            they are inside the attacker's control (THREAT_MODEL.md, trusted metadata).
+          recipient: the egress destination for this hop, BOUND HERE by the graph author
+            rather than read from state. When set, a compromised node can neither forge
+            nor delete it, which is what makes the authorization egress check trustworthy.
+            Leave None only when the destination is genuinely dynamic -- and then say so,
+            because the check is only as trustworthy as the field it reads.
 
         Behaviour:
           * Reads the session id from state[session_key] (falls back to "default").
@@ -102,12 +110,24 @@ class HarisLangGraph:
                 return delta  # this node emitted no inter-agent message; nothing to inspect
 
             session_id = state.get(self.session_key, "default")
-            metadata: dict[str, Any] = {"receiver": receiver}
-            if data_type is not None:
-                metadata["data_type"] = data_type
+
+            # AGENT-INFLUENCED metadata first: copied from shared graph state, which the
+            # wrapped agents write. Treat every value here as attacker-controlled.
+            metadata: dict[str, Any] = {}
             for sk in (state_metadata_keys or []):
                 if sk in state:
                     metadata[sk] = state[sk]
+
+            # ADAPTER-BOUND metadata LAST, so it always wins. These describe the transport
+            # and are declared by the graph author at wrap() time, so a compromised node
+            # can neither forge nor delete them. Previously the state copy ran last and
+            # could overwrite `receiver` and `data_type` -- the security decision was being
+            # keyed off values the sender controlled.
+            metadata["receiver"] = receiver
+            if data_type is not None:
+                metadata["data_type"] = data_type
+            if recipient is not None:
+                metadata["recipient"] = recipient
 
             # The Phase 0 spine. May raise HarisBlocked in enforce mode.
             delivered, decision = self.adapter.intercept(
