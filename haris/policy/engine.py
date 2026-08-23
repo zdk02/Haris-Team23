@@ -28,16 +28,27 @@ def _masked_spans(original: str, redacted: str, min_keep: int = 3) -> list[tuple
     # safe; fragmenting an identifier is not.
     spans: list[tuple[int, int]] = []
     cur: Optional[tuple[int, int]] = None
+    pending: Optional[tuple[int, int]] = None   # short unchanged run, no open mask yet
     for tag, i1, i2, _j1, _j2 in SequenceMatcher(a=original, b=redacted, autojunk=False).get_opcodes():
         if tag == "equal":
             if (i2 - i1) >= min_keep:
                 if cur is not None:
                     spans.append(cur)
                     cur = None
+                pending = None
             elif cur is not None:
                 cur = (cur[0], i2)          # absorb a short unchanged run into the open mask
+            else:
+                # No mask is open yet. Hold the run: if a change follows immediately it
+                # belongs to the same identifier and must be masked with it. Without this
+                # a name whose first letter happens to appear in the mask token leaked it
+                # ('Robert Roberts' vs '<PERSON>' share 'R' -> 'R[REDACTED]').
+                pending = (i1, i2) if pending is None else (pending[0], i2)
         elif i2 > i1:                        # replace / delete (pure insertions have i1 == i2)
-            cur = (i1, i2) if cur is None else (cur[0], i2)
+            start = pending[0] if (cur is None and pending is not None) else i1
+            cur = (start, i2) if cur is None else (cur[0], i2)
+            pending = None
+
     if cur is not None:
         spans.append(cur)
     return spans
@@ -149,6 +160,12 @@ def _build_reason(actions: list[tuple[Verdict, Action, bool]]) -> str:
 
     return "; ".join(reasons)
 
+# Span recovery is a character-level SequenceMatcher diff with autojunk disabled, so its
+# cost grows quadratically with message length: measured 2 KB -> 0.27 s, 8 KB -> 4.3 s,
+# 32 KB -> 72.8 s. Haris sits IN the data path, so a sender who chooses the message size
+# chooses how long every hop behind it waits. Above this bound we refuse instead.
+MAX_REDACT_CHARS = 8192
+
 # Message resolution
 def resolve(message: Message, verdicts: list[Verdict], policy: Policy) -> Decision:
     """Resolve all agent verdicts into one final Decision."""
@@ -158,15 +175,40 @@ def resolve(message: Message, verdicts: list[Verdict], policy: Policy) -> Decisi
     # Rule 2: choose the most restrictive surviving action.
     action = _select_action(actions)
 
-    # Rule 3: prepare the redacted content in agent order.
-    content = _compose_redactions(message.content, actions)
-
-    # Rule 4: apply monitor or enforce mode.
+    # Rule 4 now runs BEFORE rule 3, because it decides whether a redaction will be used
+    # at all. MONITOR clamps REDACT to FLAG and BLOCK discards the content, so composing
+    # unconditionally spent the most expensive step in the engine on a result that was
+    # then thrown away.
     effective_action, enforced = _apply_mode(action, policy.mode)
+
+    # Rule 3: compose the redaction in agent order - only when it will be delivered.
+    content: Optional[str] = None
+    engine_note = ""
+    if effective_action is Action.REDACT:
+        if len(message.content or "") > MAX_REDACT_CHARS:
+            # Fail CLOSED. We cannot produce a redaction in bounded time, so we do not
+            # deliver the message; passing it through unredacted would be worse.
+            effective_action, enforced = Action.BLOCK, True
+            engine_note = (f"engine: content exceeds the {MAX_REDACT_CHARS}-character "
+                           f"redaction bound; blocked rather than redacted")
+        else:
+            content = _compose_redactions(message.content, actions)
+            if content == message.content:
+                # An agent asked for a redaction but span recovery changed nothing.
+                # Never label a message REDACTED when it was delivered untouched: that is
+                # a false assurance in the audit log and on the dashboard.
+                effective_action, enforced = Action.BLOCK, True
+                content = None
+                engine_note = ("engine: redaction produced no change; blocked rather than "
+                               "delivering unmodified content as redacted")
+
+    reason = _build_reason(actions)
+    if engine_note:
+        reason = f"{reason}; {engine_note}" if reason else engine_note
 
     return Decision(
         action=effective_action,
         final_content=(content if effective_action is Action.REDACT else None),
         verdicts=list(verdicts),
-        reason=_build_reason(actions),
+        reason=reason,
         enforced=enforced)
