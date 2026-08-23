@@ -1,6 +1,6 @@
 """Haris — Security Monitoring Dashboard (Module 11).
 
-A Streamlit app that renders the live hospital demo through all three security agents,
+A Streamlit app that renders the live hospital demo through the full security line-up,
 styled to match the team's UI design: interaction graph, live inspection stream,
 security-check modules, message inspector, and a filterable audit log.
 
@@ -540,6 +540,7 @@ def _audit_log(records, sessions, subjects):
         "authorization": next((v["label"] for v in r["verdicts"] if v["agent"] == "authorization"), "—"),
         "subject_binding": next((v["label"] for v in r["verdicts"] if v["agent"] == "subject_binding"), "—"),
         "infoflow": next((v["label"] for v in r["verdicts"] if v["agent"] == "infoflow"), "—"),
+        "identity": next((v["label"] for v in r["verdicts"] if v["agent"] == "identity"), "—"),
         "decision": r["action"], "mode": "enforce" if r["enforced"] else "monitor",
     } for r in records
         if r["session"] in f_sess and r["action"] in f_dec

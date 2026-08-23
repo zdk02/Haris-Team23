@@ -130,9 +130,24 @@ attacks showing how detection degrades as the attacker hides the leaked identifi
 **medium** (`external_obfuscated`: identifier trivially reformatted) →
 **hard** (`external_paraphrase`: semantically reworded, no literal token). This is an
 *additive reporting view* — it re-groups existing scenarios, adds no new ones and changes
-no numbers — that turns the otherwise binary per-class result into a graceful degradation
-curve (100% → 42% → 0%), and directly motivates the future semantic agent (it lifts the
-"hard" bar off 0%).
+no numbers.
+
+It was described here as a "graceful degradation curve (100% → 42% → 0%)" until 2026-08-24.
+Both halves of that are now wrong, and the correction matters more than the numbers:
+
+  * The 42% was **matcher brittleness, not attacker skill**. `external_obfuscated` only
+    reformats the identifier (`MRN-0001` → `M R N 0 0 0 1`); once the info-flow matcher
+    normalised separators, medium went to 100%. A "difficulty" axis that moves when you fix
+    a bug in the detector was measuring the detector, not the attack.
+  * The remaining 0% is not a hard tier either. Verified 2026-08-24: the `external_paraphrase`
+    messages contain **no identifier at all**, so there is nothing present to leak. Scoring
+    them as missed detections invents a weakness.
+
+So the honest shape is **100% · 100% · 0%** — a cliff at a family that carries no secret,
+not a curve. Keep the axis for the reporting view, but do not read it as evidence that Haris
+degrades gracefully under obfuscation; the corpus contains no attack it fails to stop. Task K
+(attack families a metadata heuristic cannot catch) is what would give this axis real hard
+cases, and only then does "motivates the semantic agent" mean anything.
 
 ## Results snapshot (Presidio off, seed 23)
 
@@ -176,7 +191,8 @@ The aggregate rates depend on the family mix, so the **per-class breakdowns are 
       leak_check.py     # outcome-based leak metric, independent of any detector
       external_check.py # third-party confirmation via detect-secrets
       golden.py         # per-family regression guard (golden_rates.json)
-      runner.py      # three-arm runner + metrics/breakdowns
+      runner.py      # two Haris arms (monitor/enforce) + the measured unmediated
+                     #   reference, plus metrics and breakdowns
       simulate.py    # one-command entry point + JSON export
 
 ## Deferred / future work

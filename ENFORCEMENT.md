@@ -40,10 +40,21 @@ Precedence, least to most restrictive:
    `enforced` is `True`. This is the guarantee that a false positive cannot break
    the app during development.
 
-5. **No matching policy rule → deny.** `Policy.default_action` is `block`. Any
-   flow not explicitly permitted by a `PolicyRule` is denied. (Rule matching on
-   `(sender, receiver, data_type)` is not implemented yet — it needs agents to
-   report `data_type`. The default is recorded now so the semantics are settled.)
+5. **Default-deny is DECLARED, not enforced — and this section used to say otherwise.**
+   `Policy.default_action` is `block` and `Policy.rules` exists, but nothing reads
+   either: rule matching on `(sender, receiver, data_type)` was never implemented, so
+   no flow is ever denied for "not being on a list" by the policy engine.
+
+   What the shipped system actually enforces is a **sender** allow-list, not a flow
+   allow-list: `IdentityAgent` is constructed with `default_allow_unregistered=False`,
+   so a hop from an unregistered sender is blocked. A flow between two *registered*
+   agents that no rule declares is allowed, and is stopped only if the content, the
+   data-subject or the destination trips one of the agents.
+
+   `AuthorizationAgent(rules=[...], default_allow=False)` gives real default-deny per
+   flow and is exercised in `tests/test_authorization.py`; no production caller sets it,
+   because doing so means enumerating a deployment's legitimate flows. See
+   `THREAT_MODEL.md` §9 for the measured table.
 
 ## Returning a block to the sender
 

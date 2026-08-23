@@ -1,4 +1,4 @@
-"""Phase 3: the three real agents ENFORCING through the LIVE LangGraph pipeline.
+"""Phase 3: the real agent line-up ENFORCING through the LIVE LangGraph pipeline.
 
 `test_multiagent_integration.py` proves the agents compose at the Orchestrator level
 (hand-built Messages through `process()`). This file proves the SAME stack enforcing

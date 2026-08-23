@@ -1,6 +1,6 @@
 """Data layer for the Haris monitoring dashboard (Module 11).
 
-Runs the vulnerable hospital demo through all three real security agents in ONE
+Runs the vulnerable hospital demo through the full real security line-up in ONE
 orchestrator and captures, per hop, the Message + resolved Decision. This is the
 "observe-only" audit feed the Streamlit dashboard renders: it never alters the
 pipeline, it just records what Haris decided.
@@ -20,6 +20,7 @@ from typing import Any, Optional
 from demo_app.hospital.app import (
     INTERNAL_DOCTOR, EXTERNAL_EXAMPLE, record_reader, summarizer,
 )
+from demo_app.hospital.haris_pipeline import HOSPITAL_TOKENS
 from haris.agents.authorization import AuthorizationAgent
 from haris.agents.infoflow import InformationFlowAgent
 from haris.agents.secrets_pii import SecretsPIIAgent
@@ -70,6 +71,13 @@ SCENARIOS: list[Scenario] = [
     Scenario("s-tc3", "TC3 · derived → external", "patient-A", "identified", EXTERNAL_EXAMPLE),
     Scenario("s-tc4", "TC4 · patient-B into patient-A's session", "patient-A", "mixed-subject", INTERNAL_DOCTOR),
     Scenario("s-tc5", "TC5 · derived → internal", "patient-B", "identified", INTERNAL_DOCTOR),
+    # TC7 is the redaction case, and it is here because without it REDACT was structurally
+    # unreachable: in every other scenario that produces redacted content, an agent also
+    # BLOCKS, and block wins the most-restrictive rule. The dashboard therefore shipped a
+    # redact KPI tile, legend, filter and highlighter that could not fire. TC7 is the
+    # outcome Haris exists to make possible — the message is delivered, minus the secret.
+    Scenario("s-tc7", "TC7 · credential in an internal handoff", "patient-A",
+             "credential", INTERNAL_DOCTOR),
 ]
 
 AGENT_LABELS = {
@@ -77,6 +85,7 @@ AGENT_LABELS = {
     "infoflow": "Cross-Agent Info-Flow",
     "authorization": "Authorization Monitor",
     "subject_binding": "Data-Subject Authorization",
+    "identity": "Sender Identity",
 }
 
 
@@ -208,14 +217,16 @@ def _play(orch: Orchestrator) -> None:
         _safe_process(orch, Message(
             session_id=sc.session_id, sender="record_reader", receiver="summarizer",
             content=state["record"],
-            metadata={"data_type": "PHI", "data_subject": sc.subject}))
+            metadata={"data_type": "PHI", "data_subject": sc.subject,
+                      "auth_token": HOSPITAL_TOKENS["record_reader"]}))
 
         state.update(summarizer(state))      # -> state["summary"]
         _safe_process(orch, Message(
             session_id=sc.session_id, sender="summarizer", receiver="emailer",
             content=state["summary"],
             metadata={"data_type": "summary", "recipient": sc.recipient,
-                      "data_subject": sc.subject}))
+                      "data_subject": sc.subject,
+                      "auth_token": HOSPITAL_TOKENS["summarizer"]}))
 
 
 def _emit_mixed_subject(orch: Orchestrator, sc: Scenario) -> None:
@@ -225,11 +236,13 @@ def _emit_mixed_subject(orch: Orchestrator, sc: Scenario) -> None:
     _safe_process(orch, Message(
         session_id=sc.session_id, sender="record_reader", receiver="summarizer",
         content=record_reader({"subject": sc.subject})["record"],
-        metadata={"data_type": "PHI", "data_subject": sc.subject}))     # binds the session
+        metadata={"data_type": "PHI", "data_subject": sc.subject,
+                  "auth_token": HOSPITAL_TOKENS["record_reader"]}))     # binds the session
     _safe_process(orch, Message(
         session_id=sc.session_id, sender="record_reader", receiver="summarizer",
         content=record_reader({"subject": other})["record"],
-        metadata={"data_type": "PHI", "data_subject": other}))          # blocked: wrong subject
+        metadata={"data_type": "PHI", "data_subject": other,
+                  "auth_token": HOSPITAL_TOKENS["record_reader"]}))     # blocked: wrong subject
 
 
 def compute_kpis(records: list[dict]) -> dict[str, Any]:
@@ -270,6 +283,8 @@ def compute_modules(records: list[dict]) -> list[dict]:
          "num": count("authorization", "block"), "unit": "egress blocks"},
         {"name": "Data-Subject Authorization", "status": "ACTIVE", "accent": "block",
          "num": count("subject_binding", "block"), "unit": "cross-subject blocks"},
+        {"name": "Sender Identity", "status": "ACTIVE", "accent": "block",
+         "num": count("identity", "block"), "unit": "spoofed senders blocked"},
         {"name": "Injection · Semantic", "status": "PLANNED", "accent": "muted",
          "num": None, "unit": "pluggable detectors · roadmap"},
     ]

@@ -6,11 +6,11 @@ continuing. With ZERO agents in monitor mode that is a transparent pass-through
 (`run_through_haris`) -- the app still leaks, but Haris sees and records every hop.
 
 PHASE 3 (this module's `run_secured`) fills in the boxes: the SAME graph, the SAME
-interception seam, but now the orchestrator holds all three real security agents
-(Secrets/PII + Authorization + Information-flow) over the NetworkX GraphStateStore,
-and the policy mode is configurable so enforce mode can block/redact for real. The
-wiring here does NOT change between the two -- only the orchestrator's agent list,
-state store, and mode do.
+interception seam, but now the orchestrator holds the full real security line-up
+(Secrets/PII + Authorization + Subject-binding + Information-flow + Identity) over the
+NetworkX GraphStateStore, and the policy mode is configurable so enforce mode can
+block/redact for real. The wiring here does NOT change between the two -- only the
+orchestrator's agent list, state store, and mode do.
 
 The two hops carry different fields, which is why each is wrapped with its own
 message_key:
@@ -43,7 +43,7 @@ from haris.notify import Notifier
 from haris.schemas.notification import Severity
 from haris.notify.health import (HealthCheck, agents_present_probe, audit_chain_probe,
                                  state_store_probe)
-from haris.notify.channels import WebhookChannel
+from haris.notify.channels import BufferChannel, WebhookChannel
 
 
 def build_haris_graph(orchestrator: Orchestrator):
@@ -103,9 +103,10 @@ def build_hospital_agents(include_secrets: bool = True,
     only redaction composition + audit readability; the policy engine's most-restrictive
     rule is order-independent.
 
-      1. SecretsPIIAgent    - Presidio/detect-secrets content scan (destination-agnostic).
-                              Needs Presidio + the spaCy model; pass include_secrets=False
-                              for a no-Presidio run (the other two still work).
+      1. SecretsPIIAgent    - Presidio/detect-secrets content scan. Needs Presidio + the
+                              spaCy model; pass include_secrets=False for a no-Presidio run
+                              (the other four still work). Configured with the credential
+                              exception -- see the comment on its construction below.
       2. AuthorizationAgent - stateless relationship + external-egress check (TC5).
       3. SubjectBindingAgent - data-subject (patient-A vs patient-B) authorization (TC4):
                               blocks data whose subject differs from the session's subject.
@@ -124,7 +125,18 @@ def build_hospital_agents(include_secrets: bool = True,
     """
     agents: list = []
     if include_secrets:
-        agents.append(SecretsPIIAgent())
+        # always_redact_secrets=True is the CREDENTIAL EXCEPTION, and it is the only
+        # configuration under which REDACT is reachable in this demo. Default behaviour
+        # rewrites content only on egress, so an internal hop carrying an API key
+        # delivered it untouched and the redact path was structurally dead: the dashboard
+        # shipped a redact KPI tile, a legend entry, a filter and a highlighter that could
+        # never fire. Two separate problems, one fix -- a credential in an inter-agent
+        # message should not propagate even inside the boundary (it is a key, not clinical
+        # data the receiving agent needs), and the demo now has a case where BLOCK is the
+        # wrong answer and REDACT is the right one (TC7). PII is unaffected: names and
+        # diagnoses are still delivered intact on internal hops, which is what makes this
+        # a redaction rather than a block.
+        agents.append(SecretsPIIAgent(always_redact_secrets=True))
     agents.append(AuthorizationAgent())
     agents.append(SubjectBindingAgent())
     agents.append(InformationFlowAgent())
@@ -148,7 +160,7 @@ def run_secured(
     """Run one hospital scenario through the FULL secured pipeline.
 
     Same graph + same interception seam as `run_through_haris`, but the orchestrator
-    now holds the three real agents over a `GraphStateStore`, in the requested mode.
+    now holds the full real agent line-up over a `GraphStateStore`, in the requested mode.
 
     In enforce mode a BLOCK raises `HarisBlocked` inside the graph and halts it (the
     correct enforce semantics: the message never reaches the next node). We catch it so
@@ -163,17 +175,30 @@ def run_secured(
       haris          -> the HarisLangGraph wrapper (observability side-channel)
       audit          -> the AuditLog for this run; audit.checkpoint() gives the (head,
                         count) pair an operator holds outside the log to detect truncation
+      alerts         -> the BufferChannel holding the alerts this run raised, most recent
+                        first. This is the channel a blocked leak actually reaches when no
+                        webhook URL is configured, which is the normal case for a local run
+      health         -> the HealthCheck with its probes registered, so a caller (or a
+                        /health endpoint) can re-run them after the fact
     """
     store = GraphStateStore()
     policy = Policy(mode=mode, thresholds=thresholds or {})
     agent_list = agents if agents is not None else build_hospital_agents(include_secrets)
 
     # Phase 4: notifier first, so the orchestrator can push crash/block alerts through it.
-    # WebhookChannel defaults to min_severity=CRITICAL, but a blocked leak is WARNING
-    # (schemas/notification.py) -- so the alert the threat model promises reached no
-    # channel at all in the shipped pipeline. Lower the bar to WARNING here: a caught leak
-    # is precisely the thing an operator must be told about.
-    notifier = Notifier(channels=[WebhookChannel(min_severity=Severity.WARNING)])
+    #
+    # Two separate defects lived here. (1) WebhookChannel defaults to min_severity=CRITICAL,
+    # but a blocked leak is WARNING (schemas/notification.py), so the alert the threat model
+    # promises was filtered out before routing. (2) Even with that fixed, WebhookChannel is a
+    # silent no-op unless HARIS_ALERT_WEBHOOK is set -- which it is not on a local run, in
+    # CI, or on a grader's machine. So "the operator is alerted" was still true of nothing.
+    #
+    # The BufferChannel closes that: it always accepts WARNING+, keeps the last 50 alerts in
+    # memory, and is returned to the caller as `alerts`. A blocked leak therefore lands
+    # somewhere observable with zero configuration, and the webhook remains the out-of-band
+    # push for a deployment that configures one.
+    alerts = BufferChannel()
+    notifier = Notifier(channels=[alerts, WebhookChannel(min_severity=Severity.WARNING)])
 
     # The security audit log, wired into the SHIPPED path. Previously it existed, was
     # tested, and was documented in THREAT_MODEL.md -- and was created only by the
@@ -210,6 +235,8 @@ def run_secured(
 
     return {
         "audit": audit,
+        "alerts": alerts,
+        "health": health,
         "final": final,
         "blocked": blocked,
         "block_decision": block_decision,
@@ -241,7 +268,8 @@ def run_through_haris(session_id: str, subject: str, recipient: str,
 
 def _presidio_available() -> bool:
     """True if the Secrets/PII agent's Presidio path is usable, so the demo runs
-    everywhere: with Presidio we run all three agents; without it, the other two."""
+    everywhere: with Presidio we run the full five-agent line-up; without it, the other
+    four (authorization, subject binding, info-flow, identity)."""
     try:
         SecretsPIIAgent().pii.analyze("warm up")
         return True
@@ -255,14 +283,25 @@ def _summarize_hop(decision) -> str:
     return f"action={decision.action.value} enforced={decision.enforced} [{contributors}]"
 
 
-def main() -> None:
+def configure_operational_logging() -> None:
+    """Give the Tier-1 operational logger a destination.
+
+    Separated from `main()` so it is callable (and testable) rather than buried in an entry
+    point. Without it the audit checkpoints (`haris.audit.checkpoint`, INFO) are produced and
+    dropped: the truncation reference THREAT_MODEL.md promises is emitted to a logger nothing
+    configures, which is indistinguishable from not emitting it at all. `logging.basicConfig`
+    alone does NOT cover this -- `configure_logging` sets propagate=False on the `haris`
+    namespace, so the operational tier needs its own handler.
+    """
     import logging
-    # Configure the OPERATIONAL tier, not just the root logger. Without this the audit
-    # checkpoints (haris.audit.checkpoint, INFO) are produced and dropped, and the
-    # truncation reference THREAT_MODEL.md promises reaches no destination.
+
     from haris.logging_config import configure_logging
     configure_logging(level=logging.INFO)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
+
+
+def main() -> None:
+    configure_operational_logging()
 
     include_secrets = _presidio_available()
     print("=== Hospital app through the SECURED Haris (all agents, ENFORCE) ===")

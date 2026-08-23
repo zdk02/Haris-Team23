@@ -95,8 +95,10 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     # cannot stop anything -- most_restrictive([]) is ALLOW and monitor clamps above FLAG
     # anyway -- so its output was a constant, not a measurement. That every attack scenario
     # leaks absent mediation is a property of how the corpus is CONSTRUCTED; it is stated
-    # in report() and must not be presented as an experimental result. Real reference
-    # arms (a per-message content scanner, a metadata heuristic) live in baselines.py.
+    # in report() and must not be presented as an experimental result. Comparison arms that
+    # are not Haris -- a per-message content scanner, a metadata heuristic -- are task L and
+    # are NOT WRITTEN YET; `baselines.py` does not exist. Five files cited it as though it
+    # did, which is the same failure this comment is about, one level up.
     _, detected, _, _ = _run_arm(scn, agents, Mode.MONITOR)              # detection
     stopped, _, lat, delivered = _run_arm(scn, agents, Mode.ENFORCE, want_latency=True)
 

@@ -13,7 +13,7 @@ Run:  python -m demo_app.hospital.subject_demo
 """
 from __future__ import annotations
 
-from demo_app.hospital.haris_pipeline import build_hospital_agents
+from demo_app.hospital.haris_pipeline import HOSPITAL_TOKENS, build_hospital_agents
 from demo_app.hospital.records import format_record, load_record
 from haris.orchestrator.orchestrator import Orchestrator
 from haris.schemas.decision import HarisBlocked
@@ -25,7 +25,11 @@ from haris.state.graph_store import GraphStateStore
 def _phi(session_id: str, subject: str) -> Message:
     return Message(session_id=session_id, sender="record_reader", receiver="summarizer",
                    content=format_record(load_record(subject)),
-                   metadata={"data_type": "PHI", "data_subject": subject})
+                   metadata={"data_type": "PHI", "data_subject": subject,
+                             # The shipped line-up authenticates senders. Without a token
+                             # this demo's own legitimate hop is blocked as a spoof before
+                             # the cross-subject case it exists to show can be reached.
+                             "auth_token": HOSPITAL_TOKENS["record_reader"]})
 
 
 def main() -> None:

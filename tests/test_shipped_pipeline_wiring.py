@@ -18,10 +18,22 @@ THREAT_MODEL.md and true only of the test suite:
   * `run_secured` created no `AuditLog`, so nothing the shipped path did was recorded.
   * `audit_chain_probe` was registered nowhere outside the tests.
   * Audit checkpoints were emitted on a logger no entry point configured.
-  * A blocked leak reached no channel (still open — see the notifier test below).
+  * A blocked leak reached no channel: the only channel was a webhook that (a) filtered
+    WARNING out and (b) is a silent no-op unless HARIS_ALERT_WEBHOOK is set.
 
 These tests assert the CONNECTIONS, not the components. Each one should fail if the
 corresponding wire is cut.
+
+SECOND ROUND, 2026-08-24. A re-audit mutated the fixes themselves and found three that this
+file claimed to cover and did not — the tests passed 180/180 with the wire removed:
+
+  * reverting the webhook to min_severity=CRITICAL,
+  * deleting `health.register("audit_chain", ...)`, under a test *named* for it,
+  * deleting `configure_logging()` from the entry point, because `caplog` installs its own
+    handler and therefore proves nothing about what the entry point configures.
+
+Each now has a test that goes red when the wire is cut; verified by cutting all three. The
+lesson repeats one level up: a test named after a property is not a test of that property.
 """
 from __future__ import annotations
 
@@ -127,24 +139,101 @@ def test_a_second_data_subject_is_blocked_by_the_shipped_lineup():
 
 # --- the observability wiring --------------------------------------------------
 
-def test_the_chain_probe_is_registered_and_the_notifier_is_connected():
-    """Both were absent from the shipped path: the probe existed only in tests, and without
-    a notifier the orchestrator's block and crash alerts go nowhere."""
+def test_the_orchestrator_has_an_audit_log_and_a_notifier():
+    """Both were absent from the shipped path: without an audit log nothing is recorded, and
+    without a notifier the orchestrator's block and crash alerts go nowhere."""
     orchestrator = _run()["haris"].adapter.orchestrator
     assert orchestrator.audit_log is not None, "orchestrator has no audit log"
     assert orchestrator.notifier is not None, "orchestrator has no notifier"
 
 
-def test_audit_checkpoints_reach_a_configured_destination(caplog):
-    """A checkpoint is the reference that makes truncation detectable. Emitting one to a
-    logger nothing configures is the same as not emitting it -- which is what the first
-    attempt at this did, while THREAT_MODEL.md claimed a destination."""
+def test_the_chain_probe_is_actually_registered():
+    """The previous version of this test was NAMED for the probe and only asserted that a
+    notifier existed. Deleting `health.register("audit_chain", ...)` left it green. The probe
+    is what turns "the log is tamper-evident" into something the running system checks, so
+    assert it is in the registry and that it runs."""
+    health = _run()["health"]
+    status = health.check()
+    assert "audit_chain" in status.checks, sorted(status.checks)
+    assert status.checks["audit_chain"] is True
+    assert {"agents", "state_store", "audit_chain"} <= set(status.checks)
+
+
+def test_a_blocked_leak_actually_reaches_a_channel():
+    """THE ALERT WIRE, end to end. Two ways this was hollow: the webhook filtered WARNING
+    out (a blocked leak is WARNING, not CRITICAL), and a webhook with no HARIS_ALERT_WEBHOOK
+    set is a silent no-op anyway — so on every machine that has not configured one, "the
+    operator is alerted" described nothing. Assert the alert ARRIVED, not that a notifier
+    object exists."""
+    from haris.notify.notifier import _rank
+    from haris.schemas.notification import Severity
+
+    result = run_secured("wire-alert", "patient-A", EXTERNAL_EXAMPLE,
+                         leak="identified", include_secrets=False)
+    assert result["blocked"] is True
+
+    events = result["alerts"].events()
+    assert events, "a blocked leak raised no alert on any channel"
+    blocked_alert = events[0]
+    assert blocked_alert.severity is Severity.WARNING, blocked_alert
+    assert "blocked" in blocked_alert.summary.lower(), blocked_alert.summary
+    assert not blocked_alert.metadata, "channels must receive the sanitized copy"
+
+    # And the out-of-band channel must accept that severity, or a deployment that DOES
+    # configure a webhook still hears nothing about caught leaks.
+    channels = result["haris"].adapter.orchestrator.notifier.channels
+    accepting = [c for c in channels
+                 if _rank(Severity.WARNING) >= _rank(c.min_severity)]
+    assert any(c.name == "webhook" for c in accepting), (
+        "the webhook rejects WARNING, so a blocked leak never leaves the process")
+
+
+def test_audit_checkpoints_are_emitted_for_every_record(caplog):
+    """A checkpoint is the reference that makes truncation detectable. This covers
+    EMISSION only — `caplog` attaches its own handler, so it says nothing about whether any
+    destination is configured. That is the next test's job."""
     with caplog.at_level(logging.INFO, logger="haris.audit.checkpoint"):
         _run()
     emitted = [r.getMessage() for r in caplog.records
                if r.name == "haris.audit.checkpoint"]
     assert len(emitted) == 2, emitted
     assert "count=2" in emitted[-1]
+
+
+def test_the_entry_point_gives_the_checkpoint_logger_a_destination(monkeypatch):
+    """THE DESTINATION. `configure_logging` sets propagate=False on the `haris` namespace, so
+    the operational tier needs its own handler — `logging.basicConfig` does not reach it.
+    Deleting the call from the entry point left every checkpoint-related test green, because
+    they all installed a handler themselves.
+
+    So: tear the operational logger down to nothing, run the real entry point with the demo
+    body stubbed out, and assert the entry point put a handler back. Nothing but
+    `configure_logging` sets the `_haris_operational` marker, so pytest's own capture cannot
+    satisfy this."""
+    import demo_app.hospital.haris_pipeline as pipeline
+    from haris.logging_config import OPERATIONAL_LOGGER
+
+    ops = logging.getLogger(OPERATIONAL_LOGGER)
+    saved = (list(ops.handlers), ops.level, ops.propagate)
+    for handler in list(ops.handlers):
+        ops.removeHandler(handler)
+    ops.setLevel(logging.NOTSET)
+
+    monkeypatch.setattr(pipeline, "_presidio_available", lambda: False)
+    monkeypatch.setattr(pipeline, "run_secured",
+                        lambda *a, **kw: {"decisions": [], "blocked": False, "final": {}})
+    try:
+        pipeline.main()
+        assert any(getattr(h, "_haris_operational", False) for h in ops.handlers), (
+            "the entry point configured no operational handler — checkpoints are dropped")
+        assert logging.getLogger("haris.audit.checkpoint").isEnabledFor(logging.INFO)
+    finally:
+        for handler in list(ops.handlers):
+            ops.removeHandler(handler)
+        for handler in saved[0]:
+            ops.addHandler(handler)
+        ops.setLevel(saved[1])
+        ops.propagate = saved[2]
 
 
 def test_a_checkpoint_taken_now_detects_a_later_truncation():

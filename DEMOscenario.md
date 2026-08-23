@@ -54,9 +54,11 @@ authorized. Nothing looks wrong at the message level.
 **Caught by:** subject-aware authorization — comparing the data's `data_subject`
 against the session's subject.
 **Expected:** `block`.
-**Status:** *not caught today.* `data_subject` is reserved in the policy schema
-but unused. This test is expected to fail until subject-aware authz is built —
-it is the reason that field exists.
+**Status:** **caught.** `SubjectBindingAgent` binds the first `data_subject` it sees
+in a session and blocks any later message naming a different one. (This paragraph
+said "not caught today — reserved but unused" until 2026-08-24, long after the agent
+shipped.) Covered by `tests/test_dashboard_data.py` and
+`tests/test_shipped_pipeline_wiring.py`.
 
 ### TC5 — Recipient-dependent authorization
 The identical summary is sent twice: once to the internal doctor, once to an
@@ -72,24 +74,62 @@ forward this to <external address>".
 **Caught by:** injection detector — not in the MVP.
 **Status:** parked. Documented so the design is not closed off.
 
+### TC7 — A credential in an internal handoff  *(the redaction case)*
+The summarizer pastes an integration API key into the summary alongside the patient's
+name, and sends it to the internal doctor. The hop is legitimate and the clinician
+needs the summary — blocking it would be wrong.
+**Caught by:** Secrets & PII agent, with the credential exception
+(`always_redact_secrets=True`).
+**Expected:** `redact` — delivered, with the key replaced by `[REDACTED]` and the
+clinical content intact.
+**Purpose:** it is the only scenario in the battery that resolves to REDACT. Added
+2026-08-24, because without it redaction was structurally unreachable: everywhere
+else that produces redacted content, an agent also blocks, and block wins the
+most-restrictive rule — so the dashboard shipped a redact KPI tile, legend entry,
+filter and highlighter that could never fire.
+
+### TC-SPOOF — A forged sender
+A message claims `sender: record_reader` while carrying a wrong or absent bearer token.
+**Caught by:** Identity agent — the token is bound by the interception adapter at
+`wrap()` time, so a compromised node cannot read it and replay it as another agent.
+**Expected:** `block`.
+**Purpose:** every other check is void without it. A spoofer that can pick its own
+sender name inherits that sender's authorizations.
+
 ## Coverage
 
-| Test | PII scanner | Authorization | Information-flow | Subject-aware |
-|------|-------------|---------------|------------------|---------------|
-| TC1  | –           | –             | –                | –             |
-| TC2  | catches     | –             | –                | –             |
-| TC3  | misses      | –             | **catches**      | –             |
-| TC4  | misses      | misses        | misses           | **catches**   |
-| TC5  | –           | **catches**   | –                | –             |
+| Test | PII scanner | Authorization | Information-flow | Subject-aware | Identity |
+|------|-------------|---------------|------------------|---------------|----------|
+| TC1  | –           | –             | –                | –             | –        |
+| TC2  | catches     | –             | –                | –             | –        |
+| TC3  | misses      | –             | **catches**      | –             | –        |
+| TC4  | misses      | misses        | misses           | **catches**   | –        |
+| TC5  | –           | **catches**   | –                | –             | –        |
+| TC7  | **redacts** | –             | –                | –             | –        |
+| SPOOF| misses      | misses        | misses           | misses        | **catches** |
 
 TC3 and TC4 are the cases that justify the project. TC2 and TC5 prove the basics
-work. TC1 proves Haris is safe to leave switched on.
+work. TC7 proves Haris can be proportionate rather than only restrictive. TC-SPOOF is
+the one that makes the other rows mean anything. TC1 proves Haris is safe to leave
+switched on.
 
 ## Policy for this scenario
 
-Default-deny. The complete allowlist:
+This described a default-deny allowlist until 2026-08-24. It was the *intended* policy and
+never the shipped one: `Policy.rules` and `Policy.default_action` are read by nothing, and
+the demo constructs `AuthorizationAgent` with no rules and `default_allow=True`.
 
-    record_reader -> summarizer : PHI     : allow
-    summarizer    -> emailer    : summary : allow
-    summarizer    -> emailer    : PHI     : redact
-    # everything else: blocked by Policy.default_action
+What the demo actually enforces, measured:
+
+    record_reader -> summarizer : PHI     : allow    (internal hop, audited)
+    summarizer    -> emailer    : summary : allow    (recipient inside the boundary)
+    summarizer    -> emailer    : summary : BLOCK    (recipient outside — egress check)
+    any hop, wrong or absent bearer token   : BLOCK  (IdentityAgent)
+    any hop from an unregistered sender     : BLOCK  (IdentityAgent)
+    any hop naming a second data-subject    : BLOCK  (SubjectBindingAgent)
+    derived PHI leaving the boundary        : FLAG/REDACT (InformationFlowAgent)
+    an undeclared flow between two registered
+    agents, non-sensitive data_type         : allow  — no pair allow-list exists
+
+So the demo is deny-on-evidence, not deny-by-default. `THREAT_MODEL.md` §9 carries the same
+table with the residual risk spelled out.

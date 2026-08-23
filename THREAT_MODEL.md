@@ -243,8 +243,8 @@ show the basics work; TC1 shows Haris is safe to leave on.
 
 **The shipped demo is NOT default-deny, and saying so would be false.** Corrected
 2026-08-24: `AuthorizationAgent` runs with no relationship rules and `default_allow=True`,
-so an undeclared flow between two agents is permitted. What actually constrains traffic is
-the egress check plus the other three agents:
+so `AuthorizationAgent` itself permits an undeclared flow between two agents. What actually
+constrains traffic is the egress check plus the other four agents:
 
     record_reader -> summarizer : PHI     : allowed  (internal hop; audited)
     summarizer    -> emailer    : summary : allowed  (recipient inside the boundary)
@@ -252,8 +252,19 @@ the egress check plus the other three agents:
     any hop with a wrong/absent bearer token       : BLOCKED  (IdentityAgent)
     any hop naming a second data-subject           : BLOCKED  (SubjectBindingAgent)
     derived PHI bound outside the boundary         : FLAG/REDACT (InformationFlowAgent)
-    an undeclared agent-to-agent flow carrying a
-    non-sensitive data_type                        : ALLOWED — no allow-list is enforced
+    a hop from an UNREGISTERED sender, any data_type: BLOCKED  (IdentityAgent)
+    an undeclared flow between two REGISTERED agents
+    carrying a non-sensitive data_type             : ALLOWED — no sender->receiver
+                                                     pair allow-list is enforced
+
+The last two lines were a single line claiming any undeclared agent-to-agent flow is
+allowed, until it was measured on 2026-08-24 and found false. `record_reader -> exfil_node`
+with `data_type: notes` and a valid token is ALLOW; `rogue_node -> emailer` is BLOCKED,
+because `IdentityAgent` is constructed with `default_allow_unregistered=False`. So the token
+table IS an allow-list — on SENDERS. What Haris does not enforce is an allow-list on
+sender->receiver PAIRS: a legitimately registered but compromised agent can address a new
+internal destination, and only the content, subject and lineage checks stand between it and
+delivery. That is the honest residual risk, and it is narrower than the old line claimed.
 
 Default-deny is available — `AuthorizationAgent(rules=[...], default_allow=False)` — and is
 exercised in `tests/test_authorization.py`, but no production caller sets it. Enabling it
