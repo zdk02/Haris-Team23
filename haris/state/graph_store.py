@@ -13,9 +13,11 @@ Parity (verified against haris/state/memory.py):
   * `record_flow(message) -> None`  (append the Message)
   * `get_lineage(session_id) -> list[Message]`
 
-Ordering (from haris/orchestrator): `process()` calls `record_flow(message)`
-*before* `get_context(...)`, so the current hop is already the last item in
-`history`. We match that exactly — do not "helpfully" exclude it.
+Ordering (from haris/orchestrator): `process()` calls `get_context(...)` FIRST and
+`record_flow(message)` afterwards, and only when the decision was not BLOCK. So the
+history an agent sees contains the session's prior DELIVERED hops and not the current
+one. A refused message leaves no trace here — it is recorded in the audit log instead,
+which is the tier that must retain it.
 
 Graph model (additive, for Module 11):
   * nodes = agents (record_reader, summarizer, emailer, ...), attr role="agent"

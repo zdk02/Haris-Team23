@@ -67,11 +67,22 @@ class Orchestrator:
         # length, so the omission got worse as sessions got longer.
         t0 = time.perf_counter()
 
-        self.state_store.record_flow(message)
         context = self.state_store.get_context(message.session_id)
 
         verdicts = [self._safe_check(agent, message, context) for agent in self.agents]
         decision = resolve(message, verdicts, self.policy)
+
+        # Lineage is recorded AFTER the decision, and ONLY for messages that were not
+        # blocked. Recording first meant a message Haris REFUSED still entered the
+        # session's history, so an attacker who could not get a single message through
+        # could still bind the session to their own data-subject -- and every legitimate
+        # message afterwards was then blocked as cross-subject contamination. A
+        # one-message denial of service from an attacker with no delivery capability
+        # (issue #15). A blocked message never happened, so it must leave no trace in
+        # the data the agents reason over. The AUDIT log still records it; that is a
+        # different tier, and the block is exactly what an audit trail must retain.
+        if decision.action is not Action.BLOCK:
+            self.state_store.record_flow(message)
 
         # Everything the RECEIVER waits for: state store + agents + policy. This is the
         # number stored in the audit record. A record cannot contain the cost of its own

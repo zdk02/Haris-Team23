@@ -54,10 +54,15 @@ class SubjectBindingAgent(SecurityAgent):
     def _session_subject(self, context: dict[str, Any]) -> Optional[str]:
         """The subject this session is bound to = the first data_subject seen in lineage.
 
-        The orchestrator records the current message *before* calling agents, so on the
-        first subject-bearing hop the bound subject equals the current message's subject
-        (it is the only one in history) and the message is allowed. A later hop carrying a
+        The orchestrator records a hop only AFTER deciding it, and only when it was not
+        blocked, so history holds the session's prior DELIVERED hops and not the current
+        one. On the first subject-bearing hop history is therefore empty, `bound` is None
+        and the message is allowed — it is what binds the session. A later hop carrying a
         different subject is what trips the block.
+
+        Because refused hops never reach the store, an attacker whose message is blocked
+        cannot bind the session to their subject and deny service to everyone after them
+        (issue #15).
         """
         for m in context.get("history", []):
             subject = (m.metadata or {}).get(self.subject_key)

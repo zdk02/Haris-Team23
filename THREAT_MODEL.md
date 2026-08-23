@@ -75,6 +75,73 @@ alert *delivery* (e.g. email/SES) beyond the webhook.
 
 **Out of scope by design.** Network/server attacks and anyone with direct machine access.
 
+---
+
+### 2.3 The trusted-metadata boundary
+
+**This is the most important assumption in the system, so it is stated rather than buried.**
+
+Every message reaching Haris carries metadata: `session_id`, `sender`, `receiver`,
+`data_type`, `data_subject`, `recipient`, `auth_token`. Most security decisions key off
+these fields. But metadata attached to a message arrives *from the sender* — the exact party
+this threat model treats as possibly compromised. A compromised agent that edits one key can
+therefore change what Haris concludes, with no change to the content at all.
+
+**Where the enforcement point sits decides whether the check is authoritative.**
+
+Haris enforces at the interception adapter. Where that adapter is *on the data path* — it
+performs or gates the send — its decision is authoritative: the message does not move unless
+Haris allows it. Where the application performs the send itself and merely tells Haris about
+it, the metadata is a *claim by the party being judged* and the check is advisory. Moving the
+enforcement point onto the transport is a deployment-era requirement, not a code change.
+
+**What we bind, and what we still trust.**
+
+The LangGraph adapter (`demo_app/langgraph_interception.py`) binds transport-derived metadata
+at `wrap()` time — when the graph is assembled, before any agent runs — and applies those
+values *after* copying anything from shared graph state, so the message body can never
+override them:
+
+| field | source | can a compromised agent change it? |
+|---|---|---|
+| `sender`, `receiver` | `wrap()` argument | no |
+| `data_type` | `wrap()` argument | no |
+| `recipient` | `wrap(recipient=...)` when the destination is known at wiring time | no |
+| `recipient` | shared graph state, when the destination is dynamic | **yes** |
+| `session_id`, `data_subject` | shared graph state | **yes** |
+| `auth_token` | the sending agent | yes, but it must still match the registry |
+
+Both halves are pinned by tests in `tests/test_trust_boundary.py`, including one that
+deliberately asserts the *remaining* exposure so it stays visible.
+
+**An absent `recipient` is ambiguous, and we do not pretend otherwise.**
+
+A message with no recipient is both the normal internal agent-to-agent handoff *and* what a
+compromised sender produces by deleting the key. Nothing in the message separates them.
+`AuthorizationAgent(treat_missing_recipient_as_external=...)` and
+`SecretsPIIAgent(treat_missing_recipient_as_internal=...)` expose the choice. Enforcing
+"absent means external" was implemented and measured: **leak-prevention 100%, false
+positives 100%, utility 0%** — every session dies at its first hop, because that hop is a
+legitimate internal PHI handoff with no recipient. The defaults therefore keep the permissive
+reading, and the strict reading becomes correct only once the adapter binds `recipient` from
+the transport, at which point absence really does mean "no destination was declared".
+
+**A `data_type` label does not switch a check off.** Claiming to be a PHI *source* explains
+why a message holds identifiers; it does not license sending them out. The information-flow
+agent grants that exemption only while the hop stays inside the trust boundary.
+
+**A blocked message leaves no trace in lineage.** Refused hops are never recorded to the
+state store, so an attacker who cannot get a single message through cannot bind a session to
+their own data-subject and deny service to everyone after them. The audit log still records
+the block — that is a different tier, and retaining refusals is exactly its job.
+
+**The deployment requirement, stated plainly.** Bind `session_id`, `sender`, `receiver` and
+`recipient` at the interception adapter from the transport, not from the message body. Where
+an application allows a compromised agent to set these itself, the corresponding checks are
+bypassable, and Haris's guarantees are correspondingly weaker. We did not close this by
+making the agents more suspicious — we measured that approach and it costs all of the
+system's utility. We closed the part that a binding point can close, and named the rest.
+
 ## 3. What we are protecting (hospital demo)
 
 - **PHI** — private health information (name, DOB, condition).

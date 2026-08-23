@@ -148,8 +148,16 @@ class InformationFlowAgent(SecurityAgent):
     def check(self, message: Message, context: dict[str, Any]) -> Verdict:
         # A message that IS a PHI source is the ORIGIN, not a derived leak -- leave it
         # to the PII scanner / policy. Info-flow only judges DERIVED messages.
-        if message.metadata.get("data_type") == self.source_data_type:
-            return self._pass("source PHI hop; not a derived message")
+        #
+        # But `data_type` is attacker-supplied, so this exemption must not be a way to
+        # switch the agent off: a compromised sender would stamp data_type=PHI on its
+        # exfiltration hop and skip the taint check entirely. Being a source explains why
+        # a message HOLDS identifiers; it does not license sending them OUT. So the
+        # exemption applies only while the hop stays inside the trust boundary. A
+        # "source" bound for an external recipient is checked like any other message.
+        if (message.metadata.get("data_type") == self.source_data_type
+                and self._source_destination_permitted(message)):
+            return self._pass("source PHI hop within the trust boundary; not a derived message")
 
         # Collect taint tags (and subjects) from every PHI source seen earlier.
         tags: set[str] = set()
@@ -226,6 +234,20 @@ class InformationFlowAgent(SecurityAgent):
     # ------------------------------------------------------------------ #
     # Destination rule
     # ------------------------------------------------------------------ #
+
+    def _source_destination_permitted(self, message: Message) -> bool:
+        """May a hop LABELLED as a PHI source claim the origin exemption?
+
+        Only while it is not egressing. An absent recipient keeps the exemption, because
+        an internal agent-to-agent handoff is exactly how a real source hop travels and
+        absence cannot be distinguished from deletion (THREAT_MODEL.md, trusted metadata).
+        A source bound for an EXTERNAL address gets no exemption - claiming to be an
+        origin is not a licence to send identifiers outside.
+        """
+        recipient = message.metadata.get("recipient")
+        if not recipient:
+            return True
+        return self._is_internal(str(recipient))
 
     def _destination_allowed(self, message: Message) -> bool:
         recipient = message.metadata.get("recipient")
