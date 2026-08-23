@@ -138,7 +138,10 @@ Both halves of that are now wrong, and the correction matters more than the numb
   * The 42% was **matcher brittleness, not attacker skill**. `external_obfuscated` only
     reformats the identifier (`MRN-0001` → `M R N 0 0 0 1`); once the info-flow matcher
     normalised separators, medium went to 100%. A "difficulty" axis that moves when you fix
-    a bug in the detector was measuring the detector, not the attack.
+    a bug in the detector was measuring the detector, not the attack. Both arms are
+    reproducible side by side — `python -m demo_app.eval.matcher_delta` restores the old
+    exact-substring rule and re-runs the corpus: 42% → 100% detection, 0% → 100% prevention
+    on that family, with the false-positive rate unchanged at 24/120 in both.
   * The remaining 0% is not a hard tier either. Verified 2026-08-24: the `external_paraphrase`
     messages contain **no identifier at all**, so there is nothing present to leak. Scoring
     them as missed detections invents a weakness.

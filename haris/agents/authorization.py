@@ -73,8 +73,9 @@ class AuthorizationAgent(SecurityAgent):
         # the normal internal agent-to-agent handoff (record_reader -> summarizer carries
         # data_type=PHI and no recipient), so treating absence as egress blocks every
         # session at its first hop: measured leak-prevention 100%, false positives 100%,
-        # utility 0%. Distinguishing the two cases needs to know which agents are inside
-        # the system, which Haris does not hold.
+        # utility 0% (reproduce with `python -m demo_app.eval.strict_recipient`).
+        # Distinguishing the two cases needs to know which agents are inside the system,
+        # which Haris does not hold.
         #
         # Set True in a deployment whose interception adapter BINDS `recipient` from the
         # transport, so absence really does mean "no destination was declared". That

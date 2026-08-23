@@ -1,0 +1,85 @@
+diff --git a/EVAL_DESIGN.md b/EVAL_DESIGN.md
+index ec4d22f..38e6dd4 100644
+--- a/EVAL_DESIGN.md
++++ b/EVAL_DESIGN.md
+@@ -138,7 +138,10 @@ Both halves of that are now wrong, and the correction matters more than the numb
+   * The 42% was **matcher brittleness, not attacker skill**. `external_obfuscated` only
+     reformats the identifier (`MRN-0001` → `M R N 0 0 0 1`); once the info-flow matcher
+     normalised separators, medium went to 100%. A "difficulty" axis that moves when you fix
+-    a bug in the detector was measuring the detector, not the attack.
++    a bug in the detector was measuring the detector, not the attack. Both arms are
++    reproducible side by side — `python -m demo_app.eval.matcher_delta` restores the old
++    exact-substring rule and re-runs the corpus: 42% → 100% detection, 0% → 100% prevention
++    on that family, with the false-positive rate unchanged at 24/120 in both.
+   * The remaining 0% is not a hard tier either. Verified 2026-08-24: the `external_paraphrase`
+     messages contain **no identifier at all**, so there is nothing present to leak. Scoring
+     them as missed detections invents a weakness.
+diff --git a/THREAT_MODEL.md b/THREAT_MODEL.md
+index 127e703..252e932 100644
+--- a/THREAT_MODEL.md
++++ b/THREAT_MODEL.md
+@@ -130,6 +130,12 @@ legitimate internal PHI handoff with no recipient. The defaults therefore keep t
+ reading, and the strict reading becomes correct only once the adapter binds `recipient` from
+ the transport, at which point absence really does mean "no destination was declared".
+ 
++Those numbers are reproducible rather than asserted — `python -m demo_app.eval.strict_recipient`
++runs both configurations over the same corpus, holding everything constant except the two
++flags, and prints prevention, false positives and utility side by side (~1 s, no Presidio
++needed). It is also the clearest illustration of why prevention is never reported alone: the
++strict row prevents 100% of leaks *because* it delivers nothing at all.
++
+ **A `data_type` label does not switch a check off.** Claiming to be a PHI *source* explains
+ why a message holds identifiers; it does not license sending them out. The information-flow
+ agent grants that exemption only while the hop stays inside the trust boundary.
+diff --git a/haris/agents/authorization.py b/haris/agents/authorization.py
+index 8caa9be..29e38e4 100644
+--- a/haris/agents/authorization.py
++++ b/haris/agents/authorization.py
+@@ -73,8 +73,9 @@ class AuthorizationAgent(SecurityAgent):
+         # the normal internal agent-to-agent handoff (record_reader -> summarizer carries
+         # data_type=PHI and no recipient), so treating absence as egress blocks every
+         # session at its first hop: measured leak-prevention 100%, false positives 100%,
+-        # utility 0%. Distinguishing the two cases needs to know which agents are inside
+-        # the system, which Haris does not hold.
++        # utility 0% (reproduce with `python -m demo_app.eval.strict_recipient`).
++        # Distinguishing the two cases needs to know which agents are inside the system,
++        # which Haris does not hold.
+         #
+         # Set True in a deployment whose interception adapter BINDS `recipient` from the
+         # transport, so absence really does mean "no destination was declared". That
+diff --git a/report/report.md b/report/report.md
+index 4c1032b..7fdc737 100644
+--- a/report/report.md
++++ b/report/report.md
+@@ -192,6 +192,13 @@ Submission: 31 August 2026
+ > - F3 obfuscation ladder, per rung
+ > - F4 latency: structured-only vs Presidio-on vs no-agent baseline
+ > - F5 before/after of the taint-normalisation fix
++>
++> MEASURED, do not re-derive from memory (`python -m demo_app.eval.matcher_delta`, seed 23,
++> Presidio off): `external_obfuscated` goes from **42% detection / 0% prevention** with the
++> old exact-substring matcher to **100% / 100%** with the normalised one, while the
++> false-positive rate is unchanged at **24/120 (20%)** in both arms. Report both halves —
++> the flat false-positive rate is what shows the recall was not bought by making the matcher
++> indiscriminate. Every other family is identical across the two arms.
+ 
+ ### 6.5 Latency
+ 
+@@ -255,6 +262,17 @@ Submission: 31 August 2026
+ ## Appendix A — Reproducing every number in this report
+ 
+ > NOTE: A table of claim → exact command. This is the appendix that makes the rest credible.
++> Commands that already exist and must appear in it:
++>
++> | claim | command |
++> |---|---|
++> | headline rates, per-family / domain / topology breakdowns, latency | `python -m demo_app.eval.simulate` |
++> | 24/312 labels confirmed by a third-party tool | `python -m demo_app.eval.external_check` |
++> | taint-normalisation before/after (F5) | `python -m demo_app.eval.matcher_delta` |
++> | strict missing-recipient policy costs all utility (§2.3) | `python -m demo_app.eval.strict_recipient` |
++> | per-family rates unchanged since the last commit | `pytest tests/test_eval_sim.py` |
++> | the labeller can fail | `pytest tests/test_label_check_mutation.py` |
++> | audit chain resists rewrite, forged append and truncation | `pytest tests/test_audit.py` |
+ 
+ ## Appendix B — Deployment artefacts
+ 

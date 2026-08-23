@@ -192,6 +192,13 @@ Submission: 31 August 2026
 > - F3 obfuscation ladder, per rung
 > - F4 latency: structured-only vs Presidio-on vs no-agent baseline
 > - F5 before/after of the taint-normalisation fix
+>
+> MEASURED, do not re-derive from memory (`python -m demo_app.eval.matcher_delta`, seed 23,
+> Presidio off): `external_obfuscated` goes from **42% detection / 0% prevention** with the
+> old exact-substring matcher to **100% / 100%** with the normalised one, while the
+> false-positive rate is unchanged at **24/120 (20%)** in both arms. Report both halves —
+> the flat false-positive rate is what shows the recall was not bought by making the matcher
+> indiscriminate. Every other family is identical across the two arms.
 
 ### 6.5 Latency
 
@@ -255,6 +262,17 @@ Submission: 31 August 2026
 ## Appendix A — Reproducing every number in this report
 
 > NOTE: A table of claim → exact command. This is the appendix that makes the rest credible.
+> Commands that already exist and must appear in it:
+>
+> | claim | command |
+> |---|---|
+> | headline rates, per-family / domain / topology breakdowns, latency | `python -m demo_app.eval.simulate` |
+> | 24/312 labels confirmed by a third-party tool | `python -m demo_app.eval.external_check` |
+> | taint-normalisation before/after (F5) | `python -m demo_app.eval.matcher_delta` |
+> | strict missing-recipient policy costs all utility (§2.3) | `python -m demo_app.eval.strict_recipient` |
+> | per-family rates unchanged since the last commit | `pytest tests/test_eval_sim.py` |
+> | the labeller can fail | `pytest tests/test_label_check_mutation.py` |
+> | audit chain resists rewrite, forged append and truncation | `pytest tests/test_audit.py` |
 
 ## Appendix B — Deployment artefacts
 

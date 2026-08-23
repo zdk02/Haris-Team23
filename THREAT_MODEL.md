@@ -130,6 +130,12 @@ legitimate internal PHI handoff with no recipient. The defaults therefore keep t
 reading, and the strict reading becomes correct only once the adapter binds `recipient` from
 the transport, at which point absence really does mean "no destination was declared".
 
+Those numbers are reproducible rather than asserted — `python -m demo_app.eval.strict_recipient`
+runs both configurations over the same corpus, holding everything constant except the two
+flags, and prints prevention, false positives and utility side by side (~1 s, no Presidio
+needed). It is also the clearest illustration of why prevention is never reported alone: the
+strict row prevents 100% of leaks *because* it delivers nothing at all.
+
 **A `data_type` label does not switch a check off.** Claiming to be a PHI *source* explains
 why a message holds identifiers; it does not license sending them out. The information-flow
 agent grants that exemption only while the hop stays inside the trust boundary.
