@@ -198,7 +198,7 @@ Current result:
 |---|---|
 | Detection rate (staged attacks stopped) | **100%** (5/5: TC2, TC3, TC4, CRED, SPOOF) |
 | False-positive rate (benign wrongly stopped) | **0%** (0/4) |
-| Latency added per hop | a few ms (steady-state; see `latency_report.py`) |
+| Latency added per hop | ~11 ms with Presidio on (`python -m demo_app.hospital.latency_report`); ~0.1 ms structured-only (steady-state; see `latency_report.py`) |
 | Audit chain intact after the run | **yes** |
 
 The detection rate is reported over the **built** threats; roadmap threats (E, semantic
@@ -241,9 +241,22 @@ show the basics work; TC1 shows Haris is safe to leave on.
 
 ## 9. The rules for the demo
 
-Default is to block. Only these flows are allowed:
+**The shipped demo is NOT default-deny, and saying so would be false.** Corrected
+2026-08-24: `AuthorizationAgent` runs with no relationship rules and `default_allow=True`,
+so an undeclared flow between two agents is permitted. What actually constrains traffic is
+the egress check plus the other three agents:
 
-    record_reader -> summarizer : PHI     : allow   (internal hop; logged)
-    summarizer    -> emailer    : summary : allow   (internal recipient)
-    summarizer    -> emailer    : summary : block   (external recipient)
-    # cross-subject data, credentials to outside, and anything else are blocked
+    record_reader -> summarizer : PHI     : allowed  (internal hop; audited)
+    summarizer    -> emailer    : summary : allowed  (recipient inside the boundary)
+    summarizer    -> emailer    : summary : BLOCKED  (recipient outside — egress check)
+    any hop with a wrong/absent bearer token       : BLOCKED  (IdentityAgent)
+    any hop naming a second data-subject           : BLOCKED  (SubjectBindingAgent)
+    derived PHI bound outside the boundary         : FLAG/REDACT (InformationFlowAgent)
+    an undeclared agent-to-agent flow carrying a
+    non-sensitive data_type                        : ALLOWED — no allow-list is enforced
+
+Default-deny is available — `AuthorizationAgent(rules=[...], default_allow=False)` — and is
+exercised in `tests/test_authorization.py`, but no production caller sets it. Enabling it
+for a real deployment means enumerating that deployment's legitimate flows, which is a
+configuration exercise rather than a code change. `Policy.rules` and `Policy.default_action`
+are reserved by the frozen contract and read by nothing.

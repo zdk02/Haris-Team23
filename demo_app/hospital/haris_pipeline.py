@@ -37,8 +37,10 @@ from haris.schemas.decision import HarisBlocked
 from haris.schemas.policy import Mode, Policy
 from haris.state.graph_store import GraphStateStore
 from haris.state.memory import InMemoryStateStore
+from haris.agents.identity import IdentityAgent
 from haris.audit import AuditLog
 from haris.notify import Notifier
+from haris.schemas.notification import Severity
 from haris.notify.health import (HealthCheck, agents_present_probe, audit_chain_probe,
                                  state_store_probe)
 from haris.notify.channels import WebhookChannel
@@ -58,14 +60,18 @@ def build_haris_graph(orchestrator: Orchestrator):
     b.add_node("record_reader", haris.wrap(
         record_reader, "record_reader", "summarizer",
         data_type="PHI", message_key="record",
-        state_metadata_keys=["subject"],
+        # The graph calls it `subject`; SubjectBindingAgent reads `data_subject`. Copying
+        # the name through unchanged left that agent inert on every hop.
+        state_metadata_keys={"subject": "data_subject"},
+        auth_token=HOSPITAL_TOKENS["record_reader"],
     ))
     # hop 2: summarizer emits `summary` to emailer; carry recipient + subject so the
     # authorization / subject-aware agents can see them.
     b.add_node("summarizer", haris.wrap(
         summarizer, "summarizer", "emailer",
         data_type="summary", message_key="summary",
-        state_metadata_keys=["recipient", "subject"],
+        state_metadata_keys={"recipient": "recipient", "subject": "data_subject"},
+        auth_token=HOSPITAL_TOKENS["summarizer"],
     ))
     # emailer is the sink -- it hands no message to a further agent, so it is not wrapped.
     b.add_node("emailer", emailer)
@@ -81,7 +87,16 @@ def build_haris_graph(orchestrator: Orchestrator):
 # Phase 3: the real security stack wired into the live pipeline                #
 # --------------------------------------------------------------------------- #
 
-def build_hospital_agents(include_secrets: bool = True) -> list:
+# Per-agent bearer tokens for the demo. A real deployment issues these out of band and
+# loads them from its secret store; they are inline here because the demo has no such
+# store, and they are the same values `identity_demo.py` and `eval_harness.py` use.
+HOSPITAL_TOKENS: dict[str, str] = {
+    "record_reader": "rr-secret-9f2c",
+    "summarizer": "sm-secret-4a71",
+}
+
+def build_hospital_agents(include_secrets: bool = True,
+                          tokens: Optional[dict[str, str]] = None) -> list:
     """The canonical hospital agent line-up, in orchestrator order.
 
     Single source of truth for "which agents run in the hospital demo". Order affects
@@ -98,6 +113,14 @@ def build_hospital_agents(include_secrets: bool = True) -> list:
                               session trips it.
       4. InformationFlowAgent - lineage-based derived-leak / info-flow check (TC3),
                               conditioned on the PHI origin in the GraphStateStore.
+      5. IdentityAgent      - per-agent authentication (TC-SPOOF): is this message really
+                              FROM the sender it claims? Every other check is void without
+                              it, because a spoofer just labels its message "from
+                              record_reader". It was previously built, tested and claimed
+                              in THREAT_MODEL.md as "Problem F (built)" while being
+                              constructed ONLY by the eval harness and the demos -- so the
+                              shipped pipeline had no spoof defence and the 100% SPOOF
+                              detection figure came from an agent production did not run.
     """
     agents: list = []
     if include_secrets:
@@ -105,6 +128,7 @@ def build_hospital_agents(include_secrets: bool = True) -> list:
     agents.append(AuthorizationAgent())
     agents.append(SubjectBindingAgent())
     agents.append(InformationFlowAgent())
+    agents.append(IdentityAgent(tokens if tokens is not None else HOSPITAL_TOKENS))
     return agents
 
 
@@ -145,7 +169,11 @@ def run_secured(
     agent_list = agents if agents is not None else build_hospital_agents(include_secrets)
 
     # Phase 4: notifier first, so the orchestrator can push crash/block alerts through it.
-    notifier = Notifier(channels=[WebhookChannel()])
+    # WebhookChannel defaults to min_severity=CRITICAL, but a blocked leak is WARNING
+    # (schemas/notification.py) -- so the alert the threat model promises reached no
+    # channel at all in the shipped pipeline. Lower the bar to WARNING here: a caught leak
+    # is precisely the thing an operator must be told about.
+    notifier = Notifier(channels=[WebhookChannel(min_severity=Severity.WARNING)])
 
     # The security audit log, wired into the SHIPPED path. Previously it existed, was
     # tested, and was documented in THREAT_MODEL.md -- and was created only by the
@@ -229,6 +257,11 @@ def _summarize_hop(decision) -> str:
 
 def main() -> None:
     import logging
+    # Configure the OPERATIONAL tier, not just the root logger. Without this the audit
+    # checkpoints (haris.audit.checkpoint, INFO) are produced and dropped, and the
+    # truncation reference THREAT_MODEL.md promises reaches no destination.
+    from haris.logging_config import configure_logging
+    configure_logging(level=logging.INFO)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
     include_secrets = _presidio_available()

@@ -65,8 +65,9 @@ class HarisLangGraph:
         receiver: str,
         data_type: Optional[str] = None,
         message_key: Optional[str] = None,
-        state_metadata_keys: Optional[list[str]] = None,
+        state_metadata_keys: Optional[Any] = None,
         recipient: Optional[str] = None,
+        auth_token: Optional[str] = None,
     ) -> Callable[[dict], dict]:
         """Return a node that runs `fn`, then routes its outgoing message through Haris.
 
@@ -80,9 +81,14 @@ class HarisLangGraph:
           message_key: which state field this node emits onward. Defaults to the
             store-wide message_key. This is what lets one graph carry different
             fields at different hops (the hospital app emits `record` then `summary`).
-          state_metadata_keys: extra state fields to copy into metadata so later
-            agents can see them -- e.g. ["recipient", "subject"] gives the
-            authorization / subject-aware agents the recipient and data_subject.
+          state_metadata_keys: extra state fields to copy into metadata so later agents
+            can see them. Either a list of names copied through unchanged, or a MAPPING
+            {state_key: metadata_key} when the application's field name differs from the
+            one Haris's agents read. The mapping form is not a nicety: the hospital graph
+            calls its field `subject` while `SubjectBindingAgent` reads `data_subject`, and
+            copying the name through unchanged left that agent inert -- it reported "no
+            data_subject to bind against" on every hop and the cross-subject defence never
+            ran in the shipped pipeline. Translating names is the adapter's job.
             These come from SHARED GRAPH STATE, which the agents themselves write, so
             they are inside the attacker's control (THREAT_MODEL.md, trusted metadata).
           recipient: the egress destination for this hop, BOUND HERE by the graph author
@@ -90,6 +96,10 @@ class HarisLangGraph:
             nor delete it, which is what makes the authorization egress check trustworthy.
             Leave None only when the destination is genuinely dynamic -- and then say so,
             because the check is only as trustworthy as the field it reads.
+          auth_token: this node's bearer token, BOUND HERE rather than read from state, for
+            the same reason. An identity token carried in shared graph state is one a
+            compromised node can read and replay as another sender; issued at wiring time
+            it is not reachable from inside the graph.
 
         Behaviour:
           * Reads the session id from state[session_key] (falls back to "default").
@@ -114,9 +124,11 @@ class HarisLangGraph:
             # AGENT-INFLUENCED metadata first: copied from shared graph state, which the
             # wrapped agents write. Treat every value here as attacker-controlled.
             metadata: dict[str, Any] = {}
-            for sk in (state_metadata_keys or []):
-                if sk in state:
-                    metadata[sk] = state[sk]
+            mapping = (state_metadata_keys if isinstance(state_metadata_keys, dict)
+                       else {k: k for k in (state_metadata_keys or [])})
+            for state_key, meta_key in mapping.items():
+                if state_key in state:
+                    metadata[meta_key] = state[state_key]
 
             # ADAPTER-BOUND metadata LAST, so it always wins. These describe the transport
             # and are declared by the graph author at wrap() time, so a compromised node
@@ -128,6 +140,8 @@ class HarisLangGraph:
                 metadata["data_type"] = data_type
             if recipient is not None:
                 metadata["recipient"] = recipient
+            if auth_token is not None:
+                metadata["auth_token"] = auth_token
 
             # The Phase 0 spine. May raise HarisBlocked in enforce mode.
             delivered, decision = self.adapter.intercept(

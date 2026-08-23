@@ -49,7 +49,9 @@ One command runs everything, reproducibly:
 7. **The core evaluation is fully deterministic — no LLM judge.** Secrets are synthesized with
    **Faker (seeded)**, following the source paper's method. The only LLM judge is the optional
    real-LLM realism slice (future work).
-8. **Every scenario runs in three arms:** no-Haris (baseline) / monitor (detect) / enforce (prevent).
+8. **Every scenario runs in two arms:** monitor (detect) / enforce (prevent). The former
+   third arm — `agents=[]` in monitor mode — could not stop anything, so its output was a
+   constant rather than a baseline; it was removed and replaced by a measured leak metric.
 
 ---
 
@@ -134,18 +136,36 @@ curve (100% → 42% → 0%), and directly motivates the future semantic agent (i
 
 ## Results snapshot (Presidio off, seed 23)
 
+**Regenerate this block whenever the numbers move** — `python -m demo_app.eval.simulate`.
+It was last stale for two days after the normalisation fix, still quoting 80% / 42% and a
+per-domain spread that no longer existed, which is precisely the failure mode the rest of
+this document is about. Current, verified 2026-08-24:
+
     scenarios 312 (attacks 192 · benign 120)
-    leak-prevention 80% · detection 80% · false-positive 20% · utility 80% · ~0.1 ms/hop
 
-    by leak style : verbatim/derived/credential 100% · obfuscated 42% · paraphrase 0%
-    by domain     : hospital 83 · finance 81 · hr 79 · education 77  (consistent = generalization)
-    by topology   : chain 83 · branch 80 · star 78  (near-flat: Haris mediates per hop)
-    by difficulty : easy 100% · medium 42% · hard 0%  (graceful degradation as the leak is hidden)
-    false positives confined to authorized_external (coarse internal/external boundary)
+    corpus (measured, not asserted):
+      144 of 192 attack scenarios address anything outside at all
+      120 of 192 actually leak with no mediation — 48 never egress, 24 carry no identifier
 
-Honest reading: high where Haris is designed to be strong; two documented gap classes (semantic
-paraphrase, trivial obfuscation); false positives limited to one explainable class. The aggregate
-rates depend on the family mix, so the **per-class breakdowns are the real result**.
+    leak prevention 120/120 = 100% of the scenarios that actually leak
+    (verdict-based 168/192 = 88%, a denominator containing 72 that cannot leak)
+    detection 88% · false-positive 20% · utility 80% · ~0.1 ms/hop structured-only
+
+    by leak style : verbatim/derived/credential/obfuscated 100% · paraphrase 0%
+    by domain     : hospital / finance / hr / education all 88 · 88 · 20
+    by topology   : chain / branch / star all 88 · 88 · 20
+    by difficulty : easy 100% · medium 100% · hard 0%  — a cliff, not a curve
+    false positives confined to authorized_external (a partner never configured; task I2)
+
+**Honest reading, and it is not flattering.** Haris prevents every leak that actually
+occurs in this corpus. That is a statement about the corpus, not about Haris: nothing in
+312 scenarios defeats it, so the evaluation cannot show where it breaks. The per-domain and
+per-topology spreads that used to look like evidence of generalisation were Faker
+coin-flips; they are now identical across every cell, which is what "the axis measures
+nothing" looks like. Tasks K and L (attack families a metadata heuristic cannot catch, and
+reference arms to compare against) are what would make these numbers mean something.
+
+The aggregate rates depend on the family mix, so the **per-class breakdowns are the real result**.
 
 ## Layout
 

@@ -73,9 +73,9 @@ def test_monitor_mode_never_blocks_even_on_egress():
 def test_canonical_agent_lineup():
     """The single-source-of-truth agent list carries the full set (minus secrets when off)."""
     assert {a.name for a in build_hospital_agents(include_secrets=True)} == {
-        "secrets_pii", "authorization", "subject_binding", "infoflow"}
+        "secrets_pii", "authorization", "subject_binding", "infoflow", "identity"}
     assert {a.name for a in build_hospital_agents(include_secrets=False)} == {
-        "authorization", "subject_binding", "infoflow"}
+        "authorization", "subject_binding", "infoflow", "identity"}
 
 
 # --------------------------------------------------------------------------- #

@@ -57,6 +57,12 @@ from haris.schemas.message import Message
 # That separation is the whole point: an attacker who can truncate the audit file cannot
 # also reach the operator's log destination (CloudWatch, syslog, an SIEM), so the reference
 # survives to be compared against.
+# NOTE the logger NAME. `haris.*` is the operational tier (haris/logging_config.py,
+# OPERATIONAL_LOGGER = "haris"), which `configure_logging()` sets up and an entry point
+# calls. A checkpoint on a logger outside that tree, or below the configured level, is
+# emitted into nothing -- which is what happened on the first attempt at this: the messages
+# were produced, no handler existed, and THREAT_MODEL.md claimed a destination that did not
+# exist. Verify with `python -m demo_app.hospital.haris_pipeline`, not by reading the code.
 _checkpoint_logger = logging.getLogger("haris.audit.checkpoint")
 
 
