@@ -147,16 +147,44 @@ def test_paraphrase_family_carries_no_identifier_yet(results):
     assert _family(results, "external_paraphrase", "leak_unmediated") == 0.0
 
 
-def test_obfuscated_is_caught_after_normalization(results):
-    """Trivial reformatting ('MRN-4821' -> 'MRN - 4821') used to evade the exact-substring
-    taint match — 42% caught. Normalizing both sides before matching (casefold, collapse
-    whitespace and punctuation) closes it completely.
+def test_the_obfuscation_ladder_is_a_real_gradient(results):
+    """Task M2 — this family used to sit at 100% and that number meant nothing.
 
-    This family is therefore NO LONGER a difficulty tier: what looked like "medium
-    difficulty" was our matcher being brittle, not the attack being hard. Rebuilding a
-    real gradient with a graded obfuscation ladder is tracked in issue #19.
+    It contained ONE transform ('MRN-4821' -> 'MRN - 4821'), which the C1 normalisation
+    fix closed completely. Reporting "100% obfuscation resistance" off a single data
+    point told a reader we were resistant to obfuscation, when the honest claim was that
+    we were resistant to the one obfuscation we had tried.
+
+    Six graded rungs replace it. The first three are LAYOUT changes — the characters are
+    unchanged, only spacing or order moves — so collapsing separators recovers them. The
+    last three are ENCODINGS (Cyrillic homoglyphs, HTML entities, base64): the characters
+    themselves are replaced and no separator handling brings them back. Two of those came
+    out of adversarial testing of the shipped path rather than from our imagination, and
+    both render as the original identifier to a human reviewer, which is worse than a
+    silent miss.
+
+    Report the PER-RUNG curve (runner's BY OBFUSCATION RUNG table), never this family
+    average: the average is a function of how many rungs we chose to include, which is a
+    fact about the corpus and not about Haris.
     """
-    assert _family(results, "external_obfuscated", "stopped") == 1.0
+    rungs = {r["rung"] for r in results if r.get("rung")}
+    assert len(rungs) == 6, rungs
+
+    rate = _family(results, "external_obfuscated", "stopped")
+    assert 0.0 < rate < 1.0, (
+        f"family rate {rate} — a ladder that is entirely caught or entirely missed is "
+        "not a gradient, and one of the rungs has stopped measuring what it claims")
+
+    # The ordering claim the report makes: layout rungs are recovered by the matcher,
+    # encoding rungs are not. If this inverts, the ladder is no longer ordered by
+    # difficulty and the curve should not be presented as one.
+    def _rung(name, key="stopped"):
+        rows = [r for r in results if r.get("rung") == name]
+        return _rate(rows, key)
+
+    assert _rung("1_spacing") == 1.0
+    assert _rung("2_digit_spacing") == 1.0
+    assert _rung("6_base64") == 0.0
 
 
 def test_no_benign_family_produces_a_false_positive(results):

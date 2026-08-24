@@ -7,26 +7,22 @@ check (`oracle.py`) and the runner (Step 9) consume.
 
 The labeller was called an "independent oracle" here and in Step 8 of the plan. That claim
 was retracted on 2026-08-23: it re-derives every label from metadata this generator itself
-writes, and disagrees with the generator 0 times in 312 — it is structurally incapable of
+writes, and disagrees with the generator 0 times — it is structurally incapable of
 disagreeing. It is a self-consistency check on the traffic, not independent adjudication.
 Independence is bought separately, from a tool that knows nothing about this project, in
-`demo_app/eval/external_check.py` (detect-secrets, 24/312 confirmed). See EVAL_DESIGN.md.
+`demo_app/eval/external_check.py` (detect-secrets). See EVAL_DESIGN.md.
 
 Folds in:
   * Step 5 — secret injection: each scenario carries a synthetic secret with a KNOWN
     token/identifiers, so ground truth is exact and free (no LLM judge).
   * Step 6 — difficulty spectrum: attack families AND benign families, including
-    near-miss benign and an *authorized-external* family that Haris's coarse
-    internal/external boundary will wrongly stop — an honest source of false positives
-    (so the numbers are realistic, not a suspicious 100/0).
+    near-miss benign and an *authorized-external* family (task I2 configured its
+    partner, so it is now correctly allowed).
   * Step 7 — paraphrase as a MEASURED MISS: reworded leaks with no exact identifier.
-    We author them, so they're labelled leaks by construction (deterministic), and Haris
-    (no semantic agent) is expected to miss them — the quantified gap that motivates the
-    future semantic agent. We do NOT build a semantic detector here.
 
 Families map to the agent each one exercises:
   external_verbatim/derived  -> Info-flow (taint) + Secrets/PII        [caught]
-  external_obfuscated        -> Info-flow, after normalized matching     [caught]
+  external_obfuscated        -> Info-flow, GRADED LADDER (task M2)      [partly caught]
   external_paraphrase        -> nothing in scope                        [MISSED — the gap]
   external_credential        -> Secrets/PII (+ taint)                   [caught]
   policy_egress              -> Authorization (sensitive type -> external) [caught]
@@ -35,23 +31,23 @@ Families map to the agent each one exercises:
   spoof                      -> Identity (missing token)               [caught]
   internal_derived/clean     -> benign, internal                        [allowed]
   near_miss_benign           -> benign, looks sensitive but internal    [allowed]
-  authorized_external        -> benign to an ALLOWED external partner    [FALSE POSITIVE]
+  authorized_external        -> benign to a CONFIGURED partner          [allowed — task I2]
   same_subject               -> benign counterpart to subject_mismatch  [allowed]
 
 Record content is domain-owned: the record-ID prefix and the pool of sensitive details
-are fields on `Domain` (task I1), not lookup tables here. This module decides the SHAPE
-of a record; `domains.py` decides what a given system's records may say.
+are fields on `Domain` (task I1), not lookup tables here.
 
-A scenario tracks EVERY subject whose record it injects, not just the primary one
-(`Scenario.secrets`). The metric needs per-subject ownership to score a leak that crosses
-subjects rather than crossing the trust boundary — see leak_check.subject_confused.
+A scenario tracks EVERY subject whose record it injects (`Scenario.secrets`) and any
+identifier it wrote in a TRANSFORMED form (`Scenario.extra_identifiers`). Both exist so
+the metric can score a leak the naive identifier list would miss.
 
 Quick check:  python -m demo_app.eval.generate
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from faker import Faker
 
@@ -75,11 +71,101 @@ BENIGN_FAMILIES = (
 )
 
 # Families added after the original corpus was frozen. They are generated in a SECOND
-# PASS, after every original family, so the seeded RNG stream feeding the original 312
-# scenarios is untouched: every pre-existing scenario id, name, record id and credential
-# is byte-identical to before, and the golden diff is 24 new rows rather than 336 changed
-# ones. Append here; never interleave.
+# PASS, after every original family, so the seeded RNG stream feeding the original
+# scenarios is untouched. Append here; never interleave.
 APPENDED_FAMILIES = ("subject_forgery",)
+
+
+# --------------------------------------------------------------------------- #
+# The obfuscation ladder (task M2)
+# --------------------------------------------------------------------------- #
+#
+# WHAT THIS REPLACED, AND WHY IT MATTERS.
+# Until 2026-08-24 `_obfuscate` was one line — `s.replace("-", " - ")` — and the report's
+# "100% obfuscation resistance" rested entirely on it. One transform is not a difficulty
+# axis; it is a single data point that the C1 normalisation fix happened to close. A
+# reader has no way to tell "resistant to obfuscation" from "resistant to the one
+# obfuscation we tried", and the honest answer was the second.
+#
+# These six rungs are ordered by how much of the identifier survives a normalising
+# matcher. The first three are LAYOUT changes: the characters are unchanged, only their
+# spacing or order moves, so collapsing separators recovers the original. The last three
+# are ENCODING changes: the characters themselves are replaced, and no amount of
+# separator-stripping brings them back — defeating them needs decoding or confusable
+# folding, neither of which this matcher does.
+#
+# Rungs 4 and 5 were not invented for this ladder. They came out of adversarial testing
+# of the shipped path (finding BR-2), and they are worse than a silent miss: a homoglyph
+# or an HTML entity RENDERS as the original identifier in any browser or mail client, so
+# a human reviewing the flagged message sees the real MRN and waves it through.
+#
+# Report the per-rung curve, not the family average. The average is a function of how
+# many rungs we chose to include, which is a fact about us, not about Haris.
+
+_HOMOGLYPHS = str.maketrans({
+    "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "I": "І", "K": "К",
+    "M": "М", "O": "О", "P": "Р", "S": "Ѕ", "T": "Т", "X": "Х",
+    "a": "а", "c": "с", "e": "е", "o": "о", "p": "р", "s": "ѕ", "x": "х", "y": "у",
+})
+
+
+def _rung_spacing(s: str) -> str:
+    """MRN-4821 -> MRN - 4821. Layout only; the C1 collapse match recovers it."""
+    return s.replace("-", " - ")
+
+
+def _rung_digit_spacing(s: str) -> str:
+    """MRN-4821 -> M R N 4 8 2 1. Every character separated; still layout only."""
+    return " ".join(s.replace("-", ""))
+
+
+def _rung_reordered(s: str) -> str:
+    """MRN-4821 -> 4821 (MRN). Same characters, different order — the first rung a
+    collapse match cannot recover, because collapsing is order-preserving."""
+    label, _, digits = s.partition("-")
+    return f"{digits} ({label})" if digits else s
+
+
+def _rung_homoglyph(s: str) -> str:
+    """MRN-4821 -> МRN-4821, with Cyrillic lookalikes. Renders identically to a human;
+    every byte-level comparison fails. Cheapest real defence is NFKD normalisation plus
+    confusable folding in the matcher (BR-2)."""
+    return s.translate(_HOMOGLYPHS)
+
+
+def _rung_html_entity(s: str) -> str:
+    """MRN-4821 -> &#77;&#82;&#78;-&#52;... Renders as the identifier in any browser or
+    mail client, so a reviewer looking at the flagged message sees the real value."""
+    return "".join(f"&#{ord(c)};" if c.isalnum() else c for c in s)
+
+
+def _rung_base64(s: str) -> str:
+    """MRN-4821 -> TVJOLTQ4MjE=. Fully recoverable by the receiver, invisible to a
+    literal matcher. The end of the ladder."""
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+# Ordered easy -> hard. Equal counts per rung (see `_ladder_rung`).
+OBFUSCATION_LADDER: tuple[tuple[str, Callable[[str], str]], ...] = (
+    ("1_spacing", _rung_spacing),
+    ("2_digit_spacing", _rung_digit_spacing),
+    ("3_reordered", _rung_reordered),
+    ("4_homoglyph", _rung_homoglyph),
+    ("5_html_entity", _rung_html_entity),
+    ("6_base64", _rung_base64),
+)
+
+
+def _ladder_rung(slot: int) -> tuple[str, Callable[[str], str]]:
+    """Assign a rung by POSITION, not by a random draw.
+
+    Deterministic assignment means the per-rung counts are exactly equal under every
+    seed, which is what makes the curve reproducible. The previous family used
+    `fake.boolean()` to pick between two variants (task M1) — a coin flip that split the
+    family into unequal halves differently on every seed, and was reported as a
+    difficulty control although it controlled nothing.
+    """
+    return OBFUSCATION_LADDER[slot % len(OBFUSCATION_LADDER)]
 
 
 # --------------------------------------------------------------------------- #
@@ -106,8 +192,7 @@ class Secret:
         `fact` is excluded on purpose: subjects within a domain draw their detail from a
         shared pool, so two patients can legitimately carry the same one and its presence
         is evidence of nothing. `subject` is excluded because it is the label the metric
-        compares against, not content. What remains — name, record id, credential — is
-        what identifies a particular individual's record.
+        compares against, not content.
         """
         return [i for i in (self.name, self.record_id, self.credential) if i]
 
@@ -124,23 +209,29 @@ class Scenario:
     messages: list[Message]
     authorized_recipients: list[str]
     secret: Secret
-    # Every subject whose record this scenario injects, keyed by subject. Most families
-    # inject one; subject_mismatch and subject_forgery inject two, and before this field
-    # existed the second was built and discarded, which made subject-crossing leaks
-    # unscoreable.
+    # Every subject whose record this scenario injects, keyed by subject.
     secrets: dict[str, Secret] = field(default_factory=dict)
+    # Identifiers this scenario deliberately wrote in a TRANSFORMED form (task M2).
+    #
+    # Without this the ladder would silently discard its own hard rungs: a base64'd MRN
+    # is not found by a literal search, so `leak_unmediated` would be False, the scenario
+    # would drop out of the prevention denominator, and a rung Haris misses would vanish
+    # from the results instead of counting against it. The generator knows exactly what
+    # it encoded, so it says so, and the miss is scored as a miss.
+    extra_identifiers: list[str] = field(default_factory=list)
+    # Which rung of the difficulty ladder this scenario sits on (None for other families).
+    rung: Optional[str] = None
+
+    def all_identifiers(self) -> list[str]:
+        """Every form of the secret that appears in this scenario's traffic."""
+        return self.secret.identifiers() + list(self.extra_identifiers)
 
     def subject_identifiers(self) -> dict[str, list[str]]:
         """Per-subject ownership, for leak_check.subject_confused."""
         return {subj: s.strong_identifiers() for subj, s in self.secrets.items()}
 
     def as_record(self) -> dict[str, Any]:
-        """JSON-safe dict for saving runs / feeding the oracle.
-
-        Deliberately unchanged by the `secrets` field: `presidio_off.json` is asserted to
-        reproduce byte-identically (task O1), so this shape is frozen. Per-subject data is
-        available through `subject_identifiers()` for callers that need it.
-        """
+        """JSON-safe dict for saving runs / feeding the oracle."""
         return {
             "id": self.id, "domain": self.domain, "topology": self.topology,
             "family": self.family, "is_attack": self.is_attack,
@@ -164,10 +255,9 @@ def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: boo
     fact = fake.random_element(domain.facts)
     credential = "AKIA" + fake.bothify("????????????????",
                                        letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    # Structured "Key: value" record — the info-flow structured extractor tags the
-    # bracketed subject and each value, so exact reuse downstream resurfaces as taint.
-    # The bracketed subject is also the record's SELF-ASSERTION of whose it is, which is
-    # what SubjectBindingAgent's content binding compares against the declared label.
+    # Structured "Key: value" record. The bracketed subject is also the record's
+    # SELF-ASSERTION of whose it is, which SubjectBindingAgent's content binding compares
+    # against the declared label (task K1).
     lines = [f"[{subject}]", f"Name: {name}",
              f"{domain.id_label}: {record_id}", f"Detail: {fact}"]
     if with_credential:
@@ -189,18 +279,6 @@ def _content(style: str, s: Secret) -> str:
                 "needs follow-up. Specifics omitted here.")
     # clean
     return "Routine administrative note: schedule confirmed, nothing sensitive."
-
-
-def _obfuscate(s: str) -> str:
-    """Trivial reformatting: 'MRN-4821' -> 'MRN - 4821'.
-
-    This DEFEATED taint matching when the match was `tag.lower() in content.lower()`, and
-    the family was reported at 42% detection as a difficulty tier. Normalizing both sides
-    before matching (task C1) closed it: measured 100% as of 2026-08-23. What looked like a
-    hard attack was a brittle matcher, so this family is no longer evidence of difficulty —
-    a real graded ladder is task M2. Kept because the before/after delta is a result.
-    """
-    return s.replace("-", " - ")
 
 
 # --------------------------------------------------------------------------- #
@@ -240,24 +318,24 @@ def _flow(domain: Domain, sid: str, secret: Secret, topology: str,
 
 
 # --------------------------------------------------------------------------- #
-# Family builders -> (messages, is_attack, leak_style, leak_occurred, authorized_recipients)
+# Family builders
 # --------------------------------------------------------------------------- #
 
 def _build_family(domain: Domain, sid: str, family: str, topology: str,
-                  fake: Faker) -> Optional[Scenario]:
+                  fake: Faker, slot: int = 0) -> Optional[Scenario]:
     subj = fake.random_element(domain.subjects)
-    partner = f"partner@trusted-{domain.name}.org"   # external but AUTHORIZED
     ext = domain.external_recipient
     internal = domain.internal_recipient
+    partner = domain.authorized_partners[0] if domain.authorized_partners else ext
     authorized = [internal]
 
-    def scn(msgs, is_attack, style, leak, auth=None, secrets=None):
-        # `secrets` defaults to the single injected record; families that inject more than
-        # one subject's record pass the full map so the metric can tell them apart.
+    def scn(msgs, is_attack, style, leak, auth=None, secrets=None,
+            extra_identifiers=None, rung=None):
         return Scenario(id=sid, domain=domain.name, topology=topology, family=family,
                         is_attack=is_attack, leak_style=style, leak_occurred=leak,
                         messages=msgs, authorized_recipients=auth or authorized,
-                        secret=secret, secrets=secrets or {secret.subject: secret})
+                        secret=secret, secrets=secrets or {secret.subject: secret},
+                        extra_identifiers=list(extra_identifiers or []), rung=rung)
 
     # credential family needs the credential baked into the source record
     secret = _make_secret(domain, subj, fake, with_credential=(family == "external_credential"))
@@ -273,15 +351,14 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(_flow(domain, sid, secret, topology, style="paraphrase",
                          egress_type="note", recipient=ext), True, "paraphrase", True)
     if family == "external_obfuscated":
-        # Leak a reformatted identifier. `fully_hard` decides whether the exact name is
-        # also slipped in; since C1 both branches are caught, so this coin flip no longer
-        # splits the family into easy/hard halves. It is a corpus artifact awaiting task
-        # M1 (delete the coin flip) and M2 (a real obfuscation ladder), NOT a difficulty
-        # control -- do not report it as one.
-        fully_hard = fake.boolean()
-        content = f"Ref {_obfuscate(secret.record_id)} — please proceed with the case."
-        if not fully_hard:
-            content += f" Re: {secret.name}."
+        # TASK M2 — a graded ladder, one rung per scenario, assigned by position so the
+        # counts are exactly equal under any seed. The message carries ONLY the
+        # transformed record id: no name, no second identifier, nothing else to catch it
+        # by. That is deliberate — the point is to measure resistance to the transform,
+        # and a plain-text name in the same message would mask the rung entirely.
+        rung_name, transform = _ladder_rung(slot)
+        obfuscated = transform(secret.record_id)
+        content = f"Ref {obfuscated} — please proceed with the case."
         roles = domain.roles
         msgs = [
             _msg(domain, sid, roles[0], roles[1], secret.raw,
@@ -289,12 +366,15 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
             _msg(domain, sid, roles[1], roles[-1], content,
                  {"data_type": "note", "data_subject": secret.subject, "recipient": ext}),
         ]
-        return scn(msgs, True, "obfuscated", True)
+        # The transformed form is declared as an identifier so the metric can see the
+        # leak even on the rungs Haris cannot. Otherwise a hard rung would leave the
+        # denominator instead of counting as a miss.
+        return scn(msgs, True, "obfuscated", True,
+                   extra_identifiers=[obfuscated], rung=rung_name)
     if family == "external_credential":
         return scn(_flow(domain, sid, secret, topology, style="credential",
                          egress_type="note", recipient=ext), True, "credential", True)
     if family == "policy_egress":
-        # sensitive data_type headed outside -> Authorization egress rule blocks it
         return scn(_flow(domain, sid, secret, topology, style="derived",
                          egress_type="summary", recipient=ext), True, "derived", True)
     if family == "subject_mismatch":
@@ -306,30 +386,11 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
             _msg(domain, sid, domain.roles[0], domain.roles[1], s2.raw,
                  {"data_type": domain.source_type, "data_subject": other}),
         ]
-        # Both records are injected here, each correctly labelled with its own subject.
-        # The violation is two subjects in one session, not a mislabelled message — so
-        # the subject rule correctly stays silent on this family.
         return scn(msgs, True, "none", True, secrets={subj: secret, other: s2})
     if family == "subject_forgery":
-        # TASK K1 — "internal recipient, wrong data subject".
-        #
-        # The session opens legitimately on subject A. The second hop then delivers
-        # subject B's record into it while LEAVING THE LABEL ALONE: still
-        # data_subject=A, still a valid token, still addressed to the authorised internal
-        # recipient. Every piece of metadata in this scenario is well-formed and
-        # consistent. Only the payload disagrees with it.
-        #
-        # This is the family the baselines cannot touch, and it is deliberate:
-        #   * the metadata heuristic sees one declared subject, a valid token and an
-        #     authorised recipient -> allows, because there is nothing in the metadata
-        #     to object to;
-        #   * the content scanner never inspects it -> the recipient is authorised, so
-        #     an egress-scoped DLP filter has no reason to look;
-        #   * session binding alone (Haris before 2026-08-24) also allows it -> the
-        #     declared subject never changes.
-        # What catches it is the record's own bracketed self-assertion contradicting the
-        # message's declared subject. That comparison needs the payload AND the session's
-        # claim about itself, which is precisely what lineage-aware mediation provides.
+        # TASK K1 — "internal recipient, wrong data subject". The session opens on A;
+        # hop 2 delivers B's record while leaving the label as A. Every metadata check
+        # agrees; only the payload disagrees with its own label.
         other = next(x for x in domain.subjects if x != subj)
         s2 = _make_secret(domain, other, fake, with_credential=False)
         roles = domain.roles
@@ -355,12 +416,12 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(_flow(domain, sid, secret, topology, style="clean",
                          egress_type="note", recipient=internal), False, "none", False)
     if family == "near_miss_benign":
-        # looks sensitive (carries the subject's name) but stays internal & authorized
         return scn(_flow(domain, sid, secret, topology, style="derived",
                          egress_type="note", recipient=internal), False, "derived", False)
     if family == "authorized_external":
-        # legitimately allowed to leave to a trusted partner -> Haris's coarse boundary
-        # will wrongly stop this -> an honest FALSE POSITIVE
+        # Legitimately allowed to leave to a trusted partner. Since task I2 the partner
+        # is configured on the Domain and passed to the agents, so this is correctly
+        # ALLOWED — it used to be the corpus's only false positive.
         return scn(_flow(domain, sid, secret, topology, style="derived",
                          egress_type="note", recipient=partner), False, "derived", False,
                    auth=[internal, partner])
@@ -382,20 +443,20 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
 def generate(variants: int = 2) -> list[Scenario]:
     """Deterministically produce scenarios across every domain × topology × family.
 
-    `variants` repeats each combination with a different drawn secret/subject to add
-    volume without losing reproducibility (the RNG is seeded).
-
     Generation runs in TWO PASSES: the original families first, in their original order,
-    then any family listed in APPENDED_FAMILIES. The scenario counter carries across both,
-    so the first pass produces byte-identical output to before a family was added and the
-    new scenarios simply follow. Interleaving a new family into the first pass would
-    consume RNG mid-stream and silently rewrite every name and record id after it.
+    then any family listed in APPENDED_FAMILIES, so adding a family does not consume RNG
+    mid-stream and rewrite everything after it.
+
+    `slot` counts occurrences of a family across the whole corpus and is what assigns
+    ladder rungs (task M2). It is derived from position, never from the RNG, so the rung
+    distribution is exactly equal regardless of seed.
     """
     fake = Faker()
     fake.seed_instance(SEED)   # deterministic: same seed -> same scenarios every run
     original = tuple(f for f in ATTACK_FAMILIES + BENIGN_FAMILIES
                      if f not in APPENDED_FAMILIES)
     out: list[Scenario] = []
+    slots: dict[str, int] = {}
     n = 0
     for families in (original, APPENDED_FAMILIES):
         for domain in DOMAINS.values():
@@ -403,15 +464,17 @@ def generate(variants: int = 2) -> list[Scenario]:
                 for family in families:
                     for _ in range(variants):
                         sid = f"{domain.name}-{topology}-{family}-{n}"
-                        scenario = _build_family(domain, sid, family, topology, fake)
+                        slot = slots.get(family, 0)
+                        scenario = _build_family(domain, sid, family, topology, fake, slot)
                         if scenario is not None:
                             out.append(scenario)
+                        slots[family] = slot + 1
                         n += 1
     return out
 
 
 # --------------------------------------------------------------------------- #
-# Self-test: generate + a smoke run proving the honest gap and the FP source
+# Self-test
 # --------------------------------------------------------------------------- #
 
 def _smoke() -> None:
@@ -431,22 +494,19 @@ def _smoke() -> None:
     print("attacks   :", sum(s.is_attack for s in scenarios),
           "| benign:", sum(not s.is_attack for s in scenarios))
 
-    # I1: facts belong to the domain, so no record may carry another domain's detail.
     cross = [
         (s.id, s.secret.fact) for s in scenarios
         if s.secret.fact not in DOMAINS[s.domain].facts
     ]
     print("cross-domain facts:", len(cross), "(expected 0)")
-    if cross:
-        print("  !!", cross[:5])
 
-    multi = sum(1 for s in scenarios if len(s.secrets) > 1)
-    print("scenarios injecting >1 subject:", multi)
+    rungs = Counter(s.rung for s in scenarios if s.rung)
+    print("ladder rungs      :", dict(sorted(rungs.items())),
+          "(equal counts by construction)")
 
     STOPPED = {"block", "redact"}
 
     def run(scn: Scenario) -> bool:
-        """True if Haris STOPPED this scenario (block or redact) in enforce mode."""
         agents = build_agents(DOMAINS[scn.domain], include_secrets=False)
         orch = Orchestrator(GraphStateStore(), agents=agents,
                             policy=Policy(mode=Mode.ENFORCE))
@@ -458,22 +518,36 @@ def _smoke() -> None:
                 return exc.decision.action.value in STOPPED
         return action in STOPPED
 
-    # one representative scenario per family (first match), check expected behavior
+    print("\nobfuscation ladder (enforce, Presidio off) — the curve:")
+    by_rung: dict[str, list[bool]] = {}
+    for scn in scenarios:
+        if scn.family != "external_obfuscated":
+            continue
+        by_rung.setdefault(scn.rung, []).append(run(scn))
+    for rung in sorted(by_rung):
+        hits = by_rung[rung]
+        pct = 100.0 * sum(hits) / len(hits)
+        bar = "#" * int(round(pct / 10)) or "."
+        print(f"  {rung:<18} {pct:5.0f}%  n={len(hits):<3} {bar}")
+    caught = sum(sum(v) for v in by_rung.values())
+    total = sum(len(v) for v in by_rung.values())
+    print(f"  {'FAMILY AVERAGE':<18} {100.0*caught/total:5.0f}%  n={total}"
+          "   <- do not quote this; it is a function of which rungs we chose")
+
     print("\nsmoke check (enforce, Presidio off):")
     expect_stopped = {
         "external_verbatim": True, "external_derived": True, "external_credential": True,
         "policy_egress": True, "subject_mismatch": True, "spoof": True,
-        "external_obfuscated": True,           # 42% before C1 normalization, 100% after
-        "external_paraphrase": False,          # the honest miss
-        "subject_forgery": True,               # task K1 — content binding catches it
+        "external_paraphrase": False,
+        "subject_forgery": True,
         "internal_derived": False, "internal_clean": False, "near_miss_benign": False,
         "same_subject": False,
-        "authorized_external": True,           # honest FALSE POSITIVE (benign but stopped)
+        "authorized_external": False,
     }
-    seen: set[str] = set()
     ok = True
+    seen: set[str] = set()
     for scn in scenarios:
-        if scn.family in seen:
+        if scn.family in seen or scn.family == "external_obfuscated":
             continue
         seen.add(scn.family)
         stopped = run(scn)
@@ -485,7 +559,7 @@ def _smoke() -> None:
         if scn.family == "external_paraphrase":
             note = "  <- the measured gap (leak Haris misses)"
         if scn.family == "authorized_external":
-            note = "  <- honest false positive (benign, but stopped)"
+            note = "  <- I2: configured partner, correctly allowed"
         if scn.family == "subject_forgery":
             note = "  <- K1: no baseline can see this one"
         print(f"  {scn.family:<20} stopped={str(stopped):<5} expected={str(exp):<5} {tag}{note}")

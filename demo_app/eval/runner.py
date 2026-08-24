@@ -96,15 +96,15 @@ def _run_arm(scn: Scenario, agents: list, mode: Mode, want_latency: bool = False
 # Difficulty gradient for the data-exfiltration threat — how hard the attacker works to
 # hide the leaked identifier.
 #
-# HONEST STATE (measured 2026-08-24): this is not currently a gradient. "medium" was our
-# matcher being brittle about reformatted identifiers and now sits at 100% after the
-# normalisation fix; "hard" carries no injected identifier at all, so there is nothing in
-# those messages to detect. Rebuilding a real curve is tasks M2 (graded obfuscation ladder)
-# and M3 (paraphrases that genuinely retain the secret). Until then, read only easy/medium.
+# STATE (2026-08-24): "medium" is now a real six-rung ladder rather than one transform
+# (task M2) — see OBFUSCATION_LADDER in generate.py and the BY RUNG table below, which is
+# the figure to report. "hard" still carries no injected identifier at all, so there is
+# nothing in those messages to detect; task M3 replaces it with paraphrases that genuinely
+# retain the secret. Read the per-rung curve, not this three-way split.
 _DIFFICULTY = {
     "external_verbatim": "easy",     # full record copied (exact token present)
     "external_derived": "easy",      # exact identifier reused
-    "external_obfuscated": "medium", # identifier trivially reformatted
+    "external_obfuscated": "medium", # identifier transformed — see the rung breakdown
     "external_paraphrase": "hard",   # identifier semantically reworded (no literal token)
 }
 
@@ -128,11 +128,12 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     # actually receive the injected secret, or did one subject's record surface under
     # another subject's label? It can, and does, come out below 100%.
     dom = DOMAINS[scn.domain]
-    args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
+    args = (scn.all_identifiers(), scn.authorized_recipients, dom.internal_at)
     subj_ids = scn.subject_identifiers()
     return {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
+        "rung": scn.rung,                            # obfuscation ladder rung (task M2)
         "difficulty": _DIFFICULTY.get(scn.family),   # None for non-exfiltration threats
         "label_attack": label_attack,
         "detected": detected, "stopped": stopped,
@@ -233,6 +234,24 @@ def report(records: list[dict]) -> None:
             det = _pct(_rate(rs, "detected"))
             prev = _pct(_rate(rs, "stopped"))
             print(f"  {level:<8} detect={det:<5} prevent={prev:<5} (n={len(rs)})")
+
+    # THE OBFUSCATION LADDER (task M2). This is the curve, and it is the figure worth
+    # printing: the family average above is a function of which rungs we chose to
+    # include, so it says more about the corpus than about Haris.
+    rungs = [r for r in records if r.get("rung")]
+    if rungs:
+        print("\nBY OBFUSCATION RUNG  (easy -> hard; layout changes, then encodings)")
+        by = defaultdict(list)
+        for r in rungs:
+            by[r["rung"]].append(r)
+        for rung in sorted(by):
+            rs = by[rung]
+            prev = _rate(rs, "stopped")
+            leaks = sum(1 for r in rs if r["leak_haris"])
+            bar = "#" * int(round(prev * 10)) or "."
+            print(f"  {rung:<18} prevent={_pct(prev):<5} leaked={leaks:<3} "
+                  f"(n={len(rs)}) {bar}")
+        print("  n per rung is small; attach a bootstrap CI before quoting a rate (task M4).")
 
     breakdown("BY FAMILY", "family", records)
 

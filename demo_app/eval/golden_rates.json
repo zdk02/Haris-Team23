@@ -21,10 +21,10 @@
       "stopped": 1.0
     },
     "external_obfuscated": {
-      "detected": 1.0,
+      "detected": 0.3333,
       "is_attack": true,
       "n": 24,
-      "stopped": 1.0
+      "stopped": 0.3333
     },
     "external_paraphrase": {
       "detected": 0.0,

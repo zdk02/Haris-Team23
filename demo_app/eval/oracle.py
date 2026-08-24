@@ -100,7 +100,9 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
     # 4. identifier egress: a known identifier reaches an unauthorized recipient.
     #    Exact match first; then a normalized match, which catches trivially reformatted
     #    identifiers (the hard-attack class) that Haris's exact-match taint misses.
-    ids = [str(i) for i in scn.secret.identifiers() if i]
+    # all_identifiers() includes any form the generator wrote in a TRANSFORMED shape
+    # (task M2), so a base64 or homoglyph rung is still labelled as the leak it is.
+    ids = [str(i) for i in scn.all_identifiers() if i]
     norm_ids = [_norm(i) for i in ids if len(_norm(i)) >= 5]
     for m in scn.messages:
         recipient = m.metadata.get("recipient")
