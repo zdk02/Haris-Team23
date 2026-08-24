@@ -109,10 +109,16 @@ def test_subject_rule_changes_no_existing_verdict(scenarios):
         assert before == after, (scn.id, scn.family)
 
 
-def test_appended_families_are_the_ones_that_need_the_rule(scenarios):
+def test_subject_forgery_is_the_family_that_needs_the_rule(scenarios):
     """The converse: subject_forgery is invisible to the recipient rule and visible to
-    the subject rule. If this ever fails, K1 has stopped measuring what it claims."""
-    for scn in [s for s in scenarios if s.family in APPENDED_FAMILIES]:
+    the subject rule. If this ever fails, K1 has stopped measuring what it claims.
+
+    Scoped to subject_forgery by name rather than to APPENDED_FAMILIES, because later
+    appended families answer to different rules — partner_scope_violation (task K6) is
+    caught by the SCOPE rule, not this one, and sweeping it in here would make the test
+    assert something it was never about.
+    """
+    for scn in [s for s in scenarios if s.family == "subject_forgery"]:
         dom = DOMAINS[scn.domain]
         args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
         assert not leaked(list(scn.messages), *args), scn.id

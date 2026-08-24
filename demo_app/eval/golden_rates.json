@@ -1,5 +1,5 @@
 {
-  "attacks": 216,
+  "attacks": 240,
   "benign": 120,
   "families": {
     "authorized_external": {
@@ -56,6 +56,12 @@
       "n": 24,
       "stopped": 0.0
     },
+    "partner_scope_violation": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
     "policy_egress": {
       "detected": 1.0,
       "is_attack": true,
@@ -87,5 +93,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 336
+  "scenarios": 360
 }

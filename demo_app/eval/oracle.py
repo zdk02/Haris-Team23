@@ -31,6 +31,8 @@ It verifies from the traffic wherever it can (a real signal, just not an indepen
                                     per-domain registry (a ground-truth fact, not a Haris call)
   * subject forgery             -> a record whose own asserted subject contradicts the
                                     data_subject the message declares (task K1)
+  * partner scope violation     -> data about a subject the partner's agreement does
+                                    not cover (task K6)
   * identifier egress           -> a known identifier reaching a recipient NOT in the
                                     scenario's authorized-recipient list
 The one case it cannot verify from traffic is the PARAPHRASE class, where no exact token
@@ -97,7 +99,18 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
         if asserted - {str(declared)}:
             return True, "traffic:subject-forgery"
 
-    # 4. identifier egress: a known identifier reaches an unauthorized recipient.
+    # 4. scope violation (task K6): the recipient is a partner we really do have an
+    #    agreement with, and the message is honestly labelled — but the agreement does
+    #    not cover this data subject. No metadata-only check can see this, because
+    #    nothing in the metadata is wrong.
+    for addr, subs in domain.partner_scopes().items():
+        for m in scn.messages:
+            if m.metadata.get("recipient") != addr:
+                continue
+            if str(m.metadata.get("data_subject")) not in set(subs):
+                return True, "traffic:partner-scope"
+
+    # 5. identifier egress: a known identifier reaches an unauthorized recipient.
     #    Exact match first; then a normalized match, which catches trivially reformatted
     #    identifiers (the hard-attack class) that Haris's exact-match taint misses.
     # all_identifiers() includes any form the generator wrote in a TRANSFORMED shape
@@ -113,7 +126,7 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
             if any(ni in ncontent for ni in norm_ids):
                 return True, "traffic:identifier-egress-normalized"
 
-    # 5. semantic paraphrase: no exact token survives -> ground truth by construction
+    # 6. semantic paraphrase: no exact token survives -> ground truth by construction
     if scn.leak_style == "paraphrase" and scn.leak_occurred:
         return True, "construction:paraphrase"
 

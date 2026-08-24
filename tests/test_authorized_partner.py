@@ -121,15 +121,18 @@ def test_unconfigured_authz_blocks_the_partner():
 # --------------------------------------------------------------------------- #
 
 def test_every_domain_declares_its_partner():
+    """Since task K6 an agreement is (address, subjects), not a bare address — the
+    address says who may receive, the subjects say whose data."""
     for d in DOMAINS.values():
         assert d.authorized_partners, d.name
-        assert d.authorized_partners == (f"partner@trusted-{d.name}.org",), d.name
+        assert d.partner_address() == f"partner@trusted-{d.name}.org", d.name
+        assert d.partner_scopes(), f"{d.name}: agreement covers everyone, nothing to test"
 
 
 def test_the_partner_matches_what_the_generator_addresses(scenarios):
     """If these ever drift apart the false positives come straight back."""
     for scn in [s for s in scenarios if s.family == "authorized_external"]:
-        declared = set(DOMAINS[scn.domain].authorized_partners)
+        declared = {DOMAINS[scn.domain].partner_address()}
         addressed = {m.metadata.get("recipient") for m in scn.messages
                      if m.metadata.get("recipient")}
         assert declared & addressed, scn.id

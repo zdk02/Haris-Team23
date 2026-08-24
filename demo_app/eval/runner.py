@@ -130,6 +130,7 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     dom = DOMAINS[scn.domain]
     args = (scn.all_identifiers(), scn.authorized_recipients, dom.internal_at)
     subj_ids = scn.subject_identifiers()
+    scopes = scn.partner_scopes
     return {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
@@ -139,8 +140,10 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "detected": detected, "stopped": stopped,
         # measured outcomes, independent of any detector's verdict
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
-        "leak_unmediated": leaked(list(scn.messages), *args, subject_identifiers=subj_ids),
-        "leak_haris": leaked(delivered, *args, subject_identifiers=subj_ids),
+        "leak_unmediated": leaked(list(scn.messages), *args, subject_identifiers=subj_ids,
+                              partner_scopes=scopes),
+        "leak_haris": leaked(delivered, *args, subject_identifiers=subj_ids,
+                              partner_scopes=scopes),
         "latencies": lat,
     }
 

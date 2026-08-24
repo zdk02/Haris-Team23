@@ -253,6 +253,7 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     dom = DOMAINS[scn.domain]
     args = (scn.all_identifiers(), scn.authorized_recipients, dom.internal_at)
     subj_ids = scn.subject_identifiers()
+    scopes = scn.partner_scopes
 
     row: dict = {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
@@ -261,7 +262,8 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "label_attack": label_attack,
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
         "leak_unmediated": leaked(list(scn.messages), *args,
-                                  subject_identifiers=subj_ids),
+                                  subject_identifiers=subj_ids,
+                              partner_scopes=scopes),
         "arms": {},
     }
     for arm in ARMS:
@@ -269,7 +271,8 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         row["arms"][arm.key] = {
             "stopped": res.stopped,
             "detected": res.detected,
-            "leaked": leaked(res.delivered, *args, subject_identifiers=subj_ids),
+            "leaked": leaked(res.delivered, *args, subject_identifiers=subj_ids,
+                              partner_scopes=scopes),
             "latencies": res.latencies,
         }
     return row

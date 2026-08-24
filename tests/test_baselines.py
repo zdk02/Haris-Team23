@@ -129,4 +129,15 @@ def test_every_arm_is_scored_on_every_scenario(scenarios):
 
 def test_run_all_covers_the_corpus():
     rows = run_all()
-    assert len(rows) == 336
+    assert len(rows) == 360
+
+
+def test_heuristic_allows_both_halves_of_the_partner_pair(scenarios):
+    """Task K6. The metadata heuristic cannot tell a legitimate referral from an
+    out-of-scope one: the recipient is in the authorised set either way, and it never
+    looks at anything else. Allowing the benign half is correct; allowing the violation
+    is the miss that makes the pair a differentiator.
+    """
+    for family in ("authorized_external", "partner_scope_violation"):
+        scn = _by_family(scenarios, family)
+        assert not metadata_heuristic(scn).stopped, family

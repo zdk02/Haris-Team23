@@ -56,6 +56,7 @@ from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
 from haris.agents.base import SecurityAgent
+from haris.agents.partners import normalise_partners, partner_allows
 from haris.schemas.message import Message
 from haris.schemas.verdict import Label, Verdict
 
@@ -118,11 +119,12 @@ class InformationFlowAgent(SecurityAgent):
             PIIDetector; pass `None` to disable the detector (structured tags only);
             pass a custom object to inject your own (used in tests).
         internal_domains: recipient domains considered inside the trust boundary.
-        authorized_partners: EXTERNAL addresses this deployment is permitted to send
-            tainted content to — a data-sharing agreement, expressed as config (task
-            I2). Exact match, case-insensitive. Kept separate from `internal_domains`
-            on purpose: a partner is not inside the boundary, it is outside it and
-            allowed. Empty by default, which is the pre-I2 behaviour.
+        authorized_partners: data-sharing agreements. Either a bare address (permitted
+            for any subject) or an (address, subjects) pair (permitted only for those
+            data subjects). Exact address match, case-insensitive. Kept separate from
+            `internal_domains` on purpose: a partner is not inside the boundary, it is
+            outside it and allowed — for the people the agreement names. Empty by
+            default, which is the pre-I2 behaviour.
         flag_unknown_destination: when the message has no recipient in metadata, treat
             it as NOT allowed (flag). Keeps the spike's catch-by-default posture.
         use_structured_fallback: also union the structured record-field extractor so
@@ -144,7 +146,7 @@ class InformationFlowAgent(SecurityAgent):
         self._detector = detector
         self._detector_ready = detector is not _AUTO   # _AUTO builds lazily on first use
         self.internal_domains = tuple(d.lstrip("@").lower() for d in internal_domains)
-        self.authorized_partners = frozenset(str(p).lower() for p in authorized_partners)
+        self.authorized_partners = normalise_partners(authorized_partners)
         self.flag_unknown_destination = flag_unknown_destination
         self.use_structured_fallback = use_structured_fallback
         self.min_collapse_len = min_collapse_len
@@ -208,8 +210,9 @@ class InformationFlowAgent(SecurityAgent):
         # recipient or an authorized partner; anywhere else is the violation.
         if self._destination_allowed(message):
             recipient = message.metadata.get("recipient")
-            where = ("an authorized external partner"
-                     if recipient and self._is_authorized_partner(str(recipient))
+            subject = message.metadata.get("data_subject")
+            where = ("an authorized external partner for this data subject"
+                     if recipient and self._is_authorized_partner(str(recipient), subject)
                      else "within the trust boundary")
             return self._pass(
                 f"{len(hits)} derived identifier(s) resurfaced but destination is "
@@ -222,9 +225,12 @@ class InformationFlowAgent(SecurityAgent):
         # would tell a compromised sender exactly which strings tripped the detector so it
         # could bisect its payload, and it would put PHI into a log that holds only hashes.
         subj_note = f", {len(subjects)} data-subject(s)" if subjects else ""
+        scoped = (" — the recipient is a partner, but its agreement does not cover this "
+                  "data subject"
+                  if str(recipient or "").lower() in self.authorized_partners else "")
         reason = (f"derived content carries {len(hits)} identifier(s) that originated in a "
                   f"PHI source and is bound to an unpermitted destination "
-                  f"(recipient={recipient}){subj_note}")
+                  f"(recipient={recipient}){subj_note}{scoped}")
         score = min(0.99, 0.6 + 0.15 * len(hits))   # more identifiers -> higher score
         return Verdict(agent_name=self.name, label=Label.FLAG, score=score,
                        reason=reason, redacted_content=redacted)
@@ -269,7 +275,8 @@ class InformationFlowAgent(SecurityAgent):
         recipient = message.metadata.get("recipient")
         if not recipient:
             return True
-        return self._is_permitted_destination(str(recipient))
+        return self._is_permitted_destination(
+            str(recipient), message.metadata.get("data_subject"))
 
     def _destination_allowed(self, message: Message) -> bool:
         recipient = message.metadata.get("recipient")
@@ -277,23 +284,27 @@ class InformationFlowAgent(SecurityAgent):
             # No destination info: don't relax the spike's catch-by-default posture
             # unless explicitly configured to.
             return not self.flag_unknown_destination
-        return self._is_permitted_destination(str(recipient))
+        return self._is_permitted_destination(
+            str(recipient), message.metadata.get("data_subject"))
 
-    def _is_permitted_destination(self, recipient: str) -> bool:
-        """Inside the trust boundary, or an external party we have agreed to share with.
+    def _is_permitted_destination(self, recipient: str, subject=None) -> bool:
+        """Inside the trust boundary, or a partner whose agreement covers THIS subject.
 
-        Two distinct reasons a flow may proceed, deliberately not merged: the first is
-        about where the system lives, the second about who it has a contract with.
+        Three distinct reasons a flow may proceed, deliberately not merged: where the
+        system lives, who it has a contract with, and whose data that contract covers.
+        The third is what stops a referral agreement for one patient from becoming a
+        general licence to send the whole record system to that address.
         """
-        return self._is_internal(recipient) or self._is_authorized_partner(recipient)
+        return (self._is_internal(recipient)
+                or self._is_authorized_partner(recipient, subject))
 
     def _is_internal(self, recipient: str) -> bool:
         r = recipient.lower()
         return any(r.endswith("@" + d) or r.endswith("." + d) or r == d
                    for d in self.internal_domains)
 
-    def _is_authorized_partner(self, recipient: str) -> bool:
-        return recipient.lower() in self.authorized_partners
+    def _is_authorized_partner(self, recipient: str, subject=None) -> bool:
+        return partner_allows(self.authorized_partners, recipient, subject)
 
     # ------------------------------------------------------------------ #
     # Tag extraction — Module 7 detector (primary) UNION structured (fallback)

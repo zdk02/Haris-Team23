@@ -59,6 +59,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from haris.agents.base import SecurityAgent
+from haris.agents.partners import normalise_partners, partner_allows
 from haris.schemas.message import Message
 from haris.schemas.policy import PolicyRule
 from haris.schemas.verdict import Label, Verdict
@@ -90,7 +91,7 @@ class AuthorizationAgent(SecurityAgent):
         # External addresses this deployment is permitted to send to (task I2).
         # Exact match, case-insensitive. Empty = no external recipient is authorized,
         # which is the pre-I2 behaviour.
-        self.authorized_partners = frozenset(str(p).lower() for p in authorized_partners)
+        self.authorized_partners = normalise_partners(authorized_partners)
         # A message with no recipient names no destination, and the field comes from the
         # sender - the party the threat model treats as compromised. So deleting one key
         # switches the egress check off (THREAT_MODEL.md, trusted-metadata boundary).
@@ -131,7 +132,9 @@ class AuthorizationAgent(SecurityAgent):
 
         # 3. egress: sensitive data leaving the trust boundary to somewhere this
         #    deployment has NOT agreed to share with (TC5)
-        if data_type in self.sensitive_types and self._is_unauthorized_external(recipient):
+        subject = md.get("data_subject")
+        if data_type in self.sensitive_types and self._is_unauthorized_external(
+                recipient, subject):
             return self._block(
                 f"sensitive '{data_type}' routed to external recipient "
                 f"'{recipient}' (outside {self.internal_domain}, not an authorized partner)")
@@ -145,7 +148,7 @@ class AuthorizationAgent(SecurityAgent):
         # 5. permitted
         if rule is not None:
             why = "allowed by rule"
-        elif recipient and self._is_authorized_partner(recipient):
+        elif recipient and self._is_authorized_partner(recipient, subject):
             why = f"recipient '{recipient}' is an authorized external partner"
         else:
             why = "no restriction applies"
@@ -169,11 +172,11 @@ class AuthorizationAgent(SecurityAgent):
     def _eq(rule_val: str, msg_val: Optional[str]) -> bool:
         return rule_val == "*" or rule_val == msg_val
 
-    def _is_authorized_partner(self, recipient: str) -> bool:
-        """An external address this deployment has agreed to share with (task I2)."""
-        return str(recipient).lower() in self.authorized_partners
+    def _is_authorized_partner(self, recipient: str, subject=None) -> bool:
+        """An agreement permitting THIS subject's data to reach THIS address."""
+        return partner_allows(self.authorized_partners, recipient, subject)
 
-    def _is_unauthorized_external(self, recipient: Optional[str]) -> bool:
+    def _is_unauthorized_external(self, recipient: Optional[str], subject=None) -> bool:
         """Outside the trust boundary AND not a partner we are permitted to send to."""
         # An ABSENT recipient is not evidence of an internal handoff - it is absence of
         # evidence, and the field is supplied by the sender we treat as compromised.
@@ -182,7 +185,7 @@ class AuthorizationAgent(SecurityAgent):
             return self.treat_missing_recipient_as_external
         if recipient.endswith(self.internal_domain):
             return False
-        return not self._is_authorized_partner(recipient)
+        return not self._is_authorized_partner(recipient, subject)
 
     def _block(self, reason: str) -> Verdict:
         return Verdict(agent_name=self.name, label=Label.BLOCK, score=1.0, reason=reason)
