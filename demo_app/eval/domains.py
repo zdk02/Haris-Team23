@@ -38,6 +38,11 @@ class Domain:
     facts: tuple[str, ...]             # the sensitive detail pool this domain draws from
     rules: tuple[PolicyRule, ...] = () # optional explicit allow/deny; default = egress-only
     default_allow: bool = True         # True = rely on egress control (hospital parity)
+    # EXTERNAL addresses this system has agreed to share with (task I2). Not internal —
+    # outside the boundary and permitted. Before this field the agents had no way to know
+    # such an agreement existed, so every legitimate partner referral was flagged, which
+    # was the sole source of this evaluation's false positives.
+    authorized_partners: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # `id_label` and `facts` used to be lookup tables in generate.py keyed by
@@ -80,6 +85,7 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
         internal_domain=domain.internal_at,
         sensitive_types=domain.sensitive_types,
         default_allow=domain.default_allow,
+        authorized_partners=domain.authorized_partners,
     ))
 
     # Session binding is domain-agnostic (first data_subject in lineage). `known_subjects`
@@ -91,6 +97,7 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
     infoflow_kwargs = dict(
         source_data_type=domain.source_type,
         internal_domains=(domain.internal_domain,),
+        authorized_partners=domain.authorized_partners,
     )
     if not include_secrets:
         infoflow_kwargs["detector"] = None  # structured-only, no Presidio dependency
@@ -125,6 +132,7 @@ HOSPITAL = Domain(
     facts=("type 2 diabetes", "a flagged lab result", "an abnormal echocardiogram",
            "a deferred surgical referral", "a positive screening result",
            "an adjusted insulin regimen"),
+    authorized_partners=("partner@trusted-hospital.org",),
 )
 
 EDUCATION = Domain(
@@ -140,6 +148,7 @@ EDUCATION = Domain(
     facts=("a repeat course enrollment", "an academic probation notice",
            "an incomplete thesis submission", "a withheld transcript",
            "a contested grade appeal", "a revoked scholarship"),
+    authorized_partners=("partner@trusted-education.org",),
 )
 
 FINANCE = Domain(
@@ -155,6 +164,7 @@ FINANCE = Domain(
     facts=("a restructured mortgage", "an overdue balance", "an active fraud hold",
            "a declined credit limit increase", "a rejected wire transfer",
            "a delinquent auto loan"),
+    authorized_partners=("partner@trusted-finance.org",),
 )
 
 HR = Domain(
@@ -170,6 +180,7 @@ HR = Domain(
     facts=("a failed probation review", "a withdrawn offer", "a pending grievance",
            "an unexplained employment gap", "a rescinded reference",
            "a disputed exit interview"),
+    authorized_partners=("partner@trusted-hr.org",),
 )
 
 DOMAINS: dict[str, Domain] = {d.name: d for d in (HOSPITAL, EDUCATION, FINANCE, HR)}
@@ -185,6 +196,7 @@ def _selftest() -> None:
         print(f"    internal={d.internal_recipient}  external={d.external_recipient}")
         print(f"    tokens={d.tokens()}")
         print(f"    id_label={d.id_label!r}  facts={len(d.facts)}: {d.facts[0]!r}, ...")
+        print(f"    authorized partners={d.authorized_partners}")
         print(f"    agents wired: {[a.name for a in agents]}\n")
 
     pools = {d.name: set(d.facts) for d in DOMAINS.values()}

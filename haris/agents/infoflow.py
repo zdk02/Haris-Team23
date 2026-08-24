@@ -19,9 +19,20 @@ Phase 2 promotion over the spike (Module 9 scope):
      identifiers Presidio doesn't model out of the box (MRN, free-text diagnosis).
   2. DESTINATION RULE — the spike flagged any resurfacing identifier regardless of
      where the message was going. Module 9 adds the actual information-*flow* judgment:
-     tainted PHI is allowed to reach an INTERNAL recipient (inside the trust boundary)
-     but not one outside it. This is distinct from Module 8's stateless relationship
-     check — it is conditioned on the data's PHI *origin*.
+     tainted PHI is allowed to reach a PERMITTED recipient but not one outside the
+     agreed set. This is distinct from Module 8's stateless relationship check — it is
+     conditioned on the data's PHI *origin*.
+
+PERMITTED DESTINATIONS (task I2). A destination is permitted if it is inside the trust
+boundary OR it is a configured authorized partner. Those are two different things and
+this agent keeps them apart: `internal_domains` is where the system lives,
+`authorized_partners` is who it has agreed to share with. Before I2 only the first
+existed, so a legitimate referral to a partner clinic — a benign flow the deployment
+explicitly permits — was flagged like an exfiltration attempt. Measured: that single
+unconfigured address accounted for every false positive the agent produced.
+
+Partners are exact addresses, not domains, and the list is empty by default. A
+deployment that configures nothing behaves exactly as this agent did before I2.
 
 Matching (Aug 22 rework, measured in report/evidence/):
   * Both sides are NORMALISED before comparison, so a double space or a reformatted
@@ -92,6 +103,7 @@ class InformationFlowAgent(SecurityAgent):
         *,
         detector: Any = _AUTO,
         internal_domains: Iterable[str] = ("hospital.internal",),
+        authorized_partners: Iterable[str] = (),
         flag_unknown_destination: bool = True,
         use_structured_fallback: bool = True,
         min_collapse_len: int = 6,
@@ -106,10 +118,15 @@ class InformationFlowAgent(SecurityAgent):
             PIIDetector; pass `None` to disable the detector (structured tags only);
             pass a custom object to inject your own (used in tests).
         internal_domains: recipient domains considered inside the trust boundary.
+        authorized_partners: EXTERNAL addresses this deployment is permitted to send
+            tainted content to — a data-sharing agreement, expressed as config (task
+            I2). Exact match, case-insensitive. Kept separate from `internal_domains`
+            on purpose: a partner is not inside the boundary, it is outside it and
+            allowed. Empty by default, which is the pre-I2 behaviour.
         flag_unknown_destination: when the message has no recipient in metadata, treat
             it as NOT allowed (flag). Keeps the spike's catch-by-default posture.
         use_structured_fallback: also union the structured record-field extractor so
-            record-specific identifiers Presidio misses (MRN, diagnosis) still taint.
+            record-specific identifiers the detector misses (MRN, diagnosis) still taint.
         min_collapse_len: shortest normalised tag allowed to match with separators
             stripped. Below this length the collapsed form is too short to be evidence
             of anything ('DOB' would match inside 'dobbs'), so only token matching runs.
@@ -127,6 +144,7 @@ class InformationFlowAgent(SecurityAgent):
         self._detector = detector
         self._detector_ready = detector is not _AUTO   # _AUTO builds lazily on first use
         self.internal_domains = tuple(d.lstrip("@").lower() for d in internal_domains)
+        self.authorized_partners = frozenset(str(p).lower() for p in authorized_partners)
         self.flag_unknown_destination = flag_unknown_destination
         self.use_structured_fallback = use_structured_fallback
         self.min_collapse_len = min_collapse_len
@@ -153,11 +171,11 @@ class InformationFlowAgent(SecurityAgent):
         # switch the agent off: a compromised sender would stamp data_type=PHI on its
         # exfiltration hop and skip the taint check entirely. Being a source explains why
         # a message HOLDS identifiers; it does not license sending them OUT. So the
-        # exemption applies only while the hop stays inside the trust boundary. A
-        # "source" bound for an external recipient is checked like any other message.
+        # exemption applies only while the hop stays inside the permitted set. A
+        # "source" bound for an unpermitted address is checked like any other message.
         if (message.metadata.get("data_type") == self.source_data_type
                 and self._source_destination_permitted(message)):
-            return self._pass("source PHI hop within the trust boundary; not a derived message")
+            return self._pass("source PHI hop to a permitted destination; not a derived message")
 
         # Collect taint tags (and subjects) from every PHI source seen earlier.
         tags: set[str] = set()
@@ -187,12 +205,15 @@ class InformationFlowAgent(SecurityAgent):
             return self._pass("derived from PHI but no source identifier resurfaced")
 
         # DESTINATION RULE — the info-flow judgment. Tainted PHI may reach an internal
-        # recipient; heading outside the trust boundary is the violation.
+        # recipient or an authorized partner; anywhere else is the violation.
         if self._destination_allowed(message):
             recipient = message.metadata.get("recipient")
+            where = ("an authorized external partner"
+                     if recipient and self._is_authorized_partner(str(recipient))
+                     else "within the trust boundary")
             return self._pass(
-                f"{len(hits)} derived identifier(s) resurfaced but destination is within "
-                f"the trust boundary ({recipient}); PHI-origin flow permitted")
+                f"{len(hits)} derived identifier(s) resurfaced but destination is "
+                f"{where} ({recipient}); PHI-origin flow permitted")
 
         redacted = self._mask(message.content, hits)
         recipient = message.metadata.get("recipient")
@@ -202,7 +223,7 @@ class InformationFlowAgent(SecurityAgent):
         # could bisect its payload, and it would put PHI into a log that holds only hashes.
         subj_note = f", {len(subjects)} data-subject(s)" if subjects else ""
         reason = (f"derived content carries {len(hits)} identifier(s) that originated in a "
-                  f"PHI source and is bound outside the trust boundary "
+                  f"PHI source and is bound to an unpermitted destination "
                   f"(recipient={recipient}){subj_note}")
         score = min(0.99, 0.6 + 0.15 * len(hits))   # more identifiers -> higher score
         return Verdict(agent_name=self.name, label=Label.FLAG, score=score,
@@ -238,16 +259,17 @@ class InformationFlowAgent(SecurityAgent):
     def _source_destination_permitted(self, message: Message) -> bool:
         """May a hop LABELLED as a PHI source claim the origin exemption?
 
-        Only while it is not egressing. An absent recipient keeps the exemption, because
-        an internal agent-to-agent handoff is exactly how a real source hop travels and
-        absence cannot be distinguished from deletion (THREAT_MODEL.md, trusted metadata).
-        A source bound for an EXTERNAL address gets no exemption - claiming to be an
-        origin is not a licence to send identifiers outside.
+        Only while it is going somewhere permitted. An absent recipient keeps the
+        exemption, because an internal agent-to-agent handoff is exactly how a real
+        source hop travels and absence cannot be distinguished from deletion
+        (THREAT_MODEL.md, trusted metadata). A source bound for an unpermitted address
+        gets no exemption - claiming to be an origin is not a licence to send
+        identifiers outside.
         """
         recipient = message.metadata.get("recipient")
         if not recipient:
             return True
-        return self._is_internal(str(recipient))
+        return self._is_permitted_destination(str(recipient))
 
     def _destination_allowed(self, message: Message) -> bool:
         recipient = message.metadata.get("recipient")
@@ -255,17 +277,27 @@ class InformationFlowAgent(SecurityAgent):
             # No destination info: don't relax the spike's catch-by-default posture
             # unless explicitly configured to.
             return not self.flag_unknown_destination
-        return self._is_internal(str(recipient))
+        return self._is_permitted_destination(str(recipient))
+
+    def _is_permitted_destination(self, recipient: str) -> bool:
+        """Inside the trust boundary, or an external party we have agreed to share with.
+
+        Two distinct reasons a flow may proceed, deliberately not merged: the first is
+        about where the system lives, the second about who it has a contract with.
+        """
+        return self._is_internal(recipient) or self._is_authorized_partner(recipient)
 
     def _is_internal(self, recipient: str) -> bool:
         r = recipient.lower()
         return any(r.endswith("@" + d) or r.endswith("." + d) or r == d
                    for d in self.internal_domains)
 
+    def _is_authorized_partner(self, recipient: str) -> bool:
+        return recipient.lower() in self.authorized_partners
+
     # ------------------------------------------------------------------ #
     # Tag extraction — Module 7 detector (primary) UNION structured (fallback)
     # ------------------------------------------------------------------ #
-
 
     def _extract_tags(self, record_text: str) -> set[str]:
         """Tags for one PHI source, memoized by content hash. The orchestrator replays the
@@ -291,7 +323,7 @@ class InformationFlowAgent(SecurityAgent):
             tags |= detector_tags
 
         # Union the structured extractor so record-specific identifiers the detector
-        # doesn't model (MRN, free-text diagnosis) still taint. Also the sole source
+        # doesn't model (MRN, diagnosis) still taint. Also the sole source
         # of tags when the detector is unavailable.
         if self.use_structured_fallback or detector_tags is None:
             tags |= self._structured_tags(record_text)

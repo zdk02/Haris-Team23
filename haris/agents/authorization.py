@@ -9,22 +9,38 @@ Two inputs, both data-not-code:
   * relationship rules — a list of the frozen PolicyRule (sender, receiver,
     data_type, action in {"allow","deny","redact"}). "*" is a wildcard for any
     field; the first matching rule wins.
-  * egress config — internal_domain + sensitive_types. The frozen PolicyRule has
-    no recipient field, so the "don't send PHI/summary to an external address"
-    constraint (TC5) cannot be expressed as a PolicyRule; it lives here instead.
+  * egress config — internal_domain + sensitive_types + authorized_partners. The
+    frozen PolicyRule has no recipient field, so the "don't send PHI/summary to an
+    external address" constraint (TC5) cannot be expressed as a PolicyRule; it
+    lives here instead.
+
+AUTHORIZED PARTNERS (task I2). "Inside the trust boundary" and "allowed to receive
+this data" are not the same predicate, and treating them as one is what produced
+every false positive this agent had. A referral clinic, a payments processor, a
+partner university: external by any network definition, and permitted by an
+explicit agreement. `authorized_partners` is that agreement expressed as config —
+an exact-match allowlist of external addresses this deployment may send to.
+
+It is deliberately NOT folded into `internal_domain`. Calling a partner "internal"
+would be a lie in the artefact a reader checks the trust-boundary claim against,
+and it would extend the permission to every address at that partner's domain
+rather than the one address actually agreed. Exact match, one address at a time.
+
+Empty by default, so a deployment that configures nothing behaves exactly as this
+agent did before I2: every external recipient is unauthorized.
 
 Decision order for one message:
   1. matching rule action "deny"   -> BLOCK
   2. matching rule action "redact" -> FLAG  (authz only flags; actual content
      redaction is the PII / info-flow agents' job, not authorization's)
-  3. sensitive data_type to an external recipient -> BLOCK  (TC5)
+  3. sensitive data_type to an UNAUTHORIZED external recipient -> BLOCK  (TC5)
   4. no matching rule and strict mode (default_allow=False) -> BLOCK (default-deny)
   5. otherwise -> PASS
 
 The agent always emits its true verdict (e.g. BLOCK); the policy engine's mode
 gate is what downgrades it to a flag in monitor mode, so the agent stays
 mode-agnostic. `data_subject` (patient-A vs patient-B) is read but NOT enforced
-yet — reserved by the frozen Policy contract.
+here — that is SubjectBindingAgent's job.
 
 Trust boundary (THREAT_MODEL.md §2.3): `recipient`, like every other metadata
 field, is supplied by the SENDER — the party the threat model treats as possibly
@@ -32,6 +48,10 @@ compromised. An absent recipient is therefore ambiguous: it is both the normal
 internal agent-to-agent handoff AND what a compromised sender produces by deleting
 one key. `treat_missing_recipient_as_external` exposes that choice; see the note on
 it in __init__ for the measured cost of enforcing it in this architecture.
+
+Note the partner allowlist does NOT widen that hole: a compromised sender can only
+name an address the deployment already agreed to share with, which is the same
+authority it would have by naming an internal agent.
 """
 
 from __future__ import annotations
@@ -60,11 +80,17 @@ class AuthorizationAgent(SecurityAgent):
         sensitive_types: Iterable[str] = DEFAULT_SENSITIVE_TYPES,
         default_allow: bool = True,
         treat_missing_recipient_as_external: bool = False,
+        *,
+        authorized_partners: Iterable[str] = (),
     ) -> None:
         self.rules: list[PolicyRule] = list(rules or [])
         self.internal_domain = internal_domain
         self.sensitive_types = frozenset(sensitive_types)
         self.default_allow = default_allow
+        # External addresses this deployment is permitted to send to (task I2).
+        # Exact match, case-insensitive. Empty = no external recipient is authorized,
+        # which is the pre-I2 behaviour.
+        self.authorized_partners = frozenset(str(p).lower() for p in authorized_partners)
         # A message with no recipient names no destination, and the field comes from the
         # sender - the party the threat model treats as compromised. So deleting one key
         # switches the egress check off (THREAT_MODEL.md, trusted-metadata boundary).
@@ -103,11 +129,12 @@ class AuthorizationAgent(SecurityAgent):
             # action == "allow": fall through — an explicit allow still does not
             # license leaking sensitive data to an external recipient (step 3).
 
-        # 3. egress: sensitive data leaving the trust boundary (TC5)
-        if data_type in self.sensitive_types and self._is_external(recipient):
+        # 3. egress: sensitive data leaving the trust boundary to somewhere this
+        #    deployment has NOT agreed to share with (TC5)
+        if data_type in self.sensitive_types and self._is_unauthorized_external(recipient):
             return self._block(
                 f"sensitive '{data_type}' routed to external recipient "
-                f"'{recipient}' (outside {self.internal_domain})")
+                f"'{recipient}' (outside {self.internal_domain}, not an authorized partner)")
 
         # 4. default-deny (strict mode) when nothing explicitly permits the flow
         if rule is None and not self.default_allow:
@@ -116,7 +143,12 @@ class AuthorizationAgent(SecurityAgent):
                 f"(default-deny)")
 
         # 5. permitted
-        why = "allowed by rule" if rule is not None else "no restriction applies"
+        if rule is not None:
+            why = "allowed by rule"
+        elif recipient and self._is_authorized_partner(recipient):
+            why = f"recipient '{recipient}' is an authorized external partner"
+        else:
+            why = "no restriction applies"
         return self._pass(why)
 
     # ------------------------------------------------------------------ #
@@ -137,13 +169,20 @@ class AuthorizationAgent(SecurityAgent):
     def _eq(rule_val: str, msg_val: Optional[str]) -> bool:
         return rule_val == "*" or rule_val == msg_val
 
-    def _is_external(self, recipient: Optional[str]) -> bool:
+    def _is_authorized_partner(self, recipient: str) -> bool:
+        """An external address this deployment has agreed to share with (task I2)."""
+        return str(recipient).lower() in self.authorized_partners
+
+    def _is_unauthorized_external(self, recipient: Optional[str]) -> bool:
+        """Outside the trust boundary AND not a partner we are permitted to send to."""
         # An ABSENT recipient is not evidence of an internal handoff - it is absence of
         # evidence, and the field is supplied by the sender we treat as compromised.
         # Deleting one key must not be a way to turn the egress check off.
         if recipient is None:
             return self.treat_missing_recipient_as_external
-        return not recipient.endswith(self.internal_domain)
+        if recipient.endswith(self.internal_domain):
+            return False
+        return not self._is_authorized_partner(recipient)
 
     def _block(self, reason: str) -> Verdict:
         return Verdict(agent_name=self.name, label=Label.BLOCK, score=1.0, reason=reason)
