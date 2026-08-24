@@ -7,8 +7,9 @@
 # Hardened for the AWS/Fargate deployment (plan Stage 1):
 #   * runs as an unprivileged user, not root
 #   * no compiler toolchain in the final image
+#   * every dependency, including the spaCy model, installed from a pinned lockfile
 #   * unbuffered stdout, so CloudWatch shows log lines as they happen
-#   * a container HEALTHCHECK against the same endpoint the ALB target group uses
+#   * a container HEALTHCHECK against the same endpoint the ALB target group polls
 #
 # The base image is pinned by tag during development. Pin it by digest before the
 # submission build — see the note at the end of this file.
@@ -40,17 +41,23 @@ ENV HOME=/home/haris
 WORKDIR /app
 
 # --------------------------------------------------------------------------- #
-# Dependencies first, so this layer is reused unless requirements.txt changes.  #
+# Dependencies, from the lockfile only.                                        #
 #                                                                              #
 # build-essential is deliberately NOT installed. numpy, blis, thinc and spaCy   #
 # all publish manylinux wheels for cp311, so nothing needs to compile — which   #
 # keeps roughly 250 MB of compiler toolchain out of both the image and the      #
 # attack surface. If a dependency ever does need to build from source, use a    #
 # multi-stage build rather than adding gcc back to the runtime image.           #
+#                                                                              #
+# The spaCy model Presidio depends on is installed BY THE LOCKFILE, pinned by   #
+# sha256 (requirements.lock.txt). It is deliberately NOT fetched afterwards     #
+# with `python -m spacy download en_core_web_sm`: that re-resolves the model    #
+# over the network at build time and overwrites the pinned wheel, which voids   #
+# the pin without any visible sign that it did. An earlier revision of this     #
+# file did both, so the sha256 pin was decorative for several builds.           #
 # --------------------------------------------------------------------------- #
 COPY requirements.lock.txt .
-RUN pip install --no-cache-dir -r requirements.lock.txt \
-    && python -m spacy download en_core_web_sm   # Presidio (Secrets/PII agent) needs this model
+RUN pip install --no-cache-dir -r requirements.lock.txt
 
 # --------------------------------------------------------------------------- #
 # Application code, owned by the runtime user.                                 #
@@ -72,13 +79,21 @@ EXPOSE 8501
 # --------------------------------------------------------------------------- #
 # Liveness.                                                                    #
 #                                                                              #
-# Checks Streamlit's own /_stcore/health using the interpreter that is already  #
-# in the image, so no curl and no extra package. This is the same endpoint the  #
-# ALB target group will check, which means a health failure looks identical     #
-# locally and in production.                                                    #
+# Checks Streamlit's own /_stcore/health using the interpreter already in the   #
+# image, so no curl and no extra package. The ALB target group polls the SAME   #
+# endpoint, so one signal governs both environments — but the MECHANISMS are    #
+# not the same, and it is worth being precise about that: ECS/Fargate does not  #
+# run a Dockerfile HEALTHCHECK at all. It honours only the `healthCheck` block  #
+# in the container definition, which this deployment does not set. So this      #
+# probe governs `docker run` and `docker compose`; in production the ALB target #
+# check is what drains an unhealthy task and lets ECS replace it.               #
+#                                                                              #
+# Note also that Docker REPORTS health but does not act on it — an unhealthy    #
+# container is not restarted by `restart: unless-stopped`, which fires on       #
+# process exit. Acting on the signal is the orchestrator's job.                 #
 #                                                                              #
 # start-period is 90s: the first request boots Presidio and spaCy and replays   #
-# all five demo scenarios through the orchestrator, so an early check would     #
+# the demo scenario battery through the orchestrator, so an earlier probe would #
 # report unhealthy while the container is merely still starting.                #
 # --------------------------------------------------------------------------- #
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
@@ -99,4 +114,14 @@ CMD ["streamlit", "run", "demo_app/dashboard.py", \
 #                                                                              #
 # Pinning is left until last on purpose — a pinned digest makes iterating on    #
 # the image slower, and the value is in the final artefact, not the drafts.     #
+#                                                                              #
+# Build the submission image with provenance disabled:                          #
+#                                                                              #
+#   docker buildx build --provenance=false -t <repo>:submission .              #
+#                                                                              #
+# The default buildx build pushes an OCI image INDEX carrying a provenance      #
+# attestation. ECR does not scan indexes, so `describe-image-scan-findings      #
+# --image-id imageTag=<tag>` returns ScanNotFoundException even though the      #
+# console resolves the child manifest and shows results. Disabling provenance   #
+# makes the tag address a single manifest, so the scan is addressable by tag.   #
 # --------------------------------------------------------------------------- #

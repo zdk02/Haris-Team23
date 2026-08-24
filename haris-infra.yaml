@@ -3,9 +3,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Haris operator dashboard — network, load balancer, identity and compute.
   One Fargate task behind an internet-facing ALB across two availability zones.
-  The ECR repository and the Secrets Manager secret are deliberately NOT in this
-  stack: they hold state that should outlive it, and they are created by hand so
-  they can be inspected and screenshotted for the report appendix.
+  The ECR repository and the two Secrets Manager secrets are deliberately NOT in
+  this stack: they hold state that should outlive it, and they are created by
+  hand so they can be inspected and screenshotted for the report appendix.
 
 # ---------------------------------------------------------------------------
 # Parameters
@@ -28,6 +28,15 @@ Parameters:
       ARN of the Secrets Manager secret holding the operator token. The value is
       injected into the task at start; it never appears in this template, in the
       image, or in version control.
+
+  AuditKeySecretArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret holding the audit-chain HMAC key.
+      Without it the chain degrades to a plain hash: corruption-evident, but not
+      tamper-evident, because anyone able to write the log can recompute it.
+      Held separately from the log it protects — a key stored beside the thing
+      it guards protects nothing.
 
   CertificateArn:
     Type: String
@@ -63,6 +72,13 @@ Parameters:
     Type: Number
     Default: 8501
     Description: Streamlit's port.
+
+  AlertEmail:
+    Type: String
+    Description: >
+      Address that receives deployment alarms. AWS sends a confirmation request
+      on first deploy and the subscription delivers NOTHING until that link is
+      clicked — a pending subscription looks configured and is inert.
 
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
@@ -226,6 +242,18 @@ Resources:
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: "30"
+        # Streamlit keeps session state server-side, on the far end of a
+        # WebSocket. At DesiredCount 1 this changes nothing — but ECS defaults
+        # to 100/200 during a rolling deploy, so two tasks run briefly and a
+        # client that reconnects in that window can land on the other one and
+        # lose its session. The values below match the AWS defaults; they are
+        # set explicitly because an inherited default is not a reproducible one.
+        - Key: stickiness.enabled
+          Value: "true"
+        - Key: stickiness.type
+          Value: lb_cookie
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: "86400"
 
   HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -271,13 +299,29 @@ Resources:
         HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
         EvaluateTargetHealth: false
 
+  WwwDnsRecord:
+    Condition: HasCertificate
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "www.${DomainName}"
+      Type: A
+      # The certificate covers *.haris-monitor.com, so a reader reasonably
+      # assumes www resolves. Without this record it does not resolve at all —
+      # a name the certificate advertises but DNS cannot answer reads as a
+      # broken deployment rather than a missing convenience.
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
   # =========================================================================
   # Identity
   #
   # Two roles, and the split matters.
   #
   # The EXECUTION role is assumed by the ECS agent before any of our code runs:
-  # it pulls the image, reads the secret, and writes log streams. The awslogs
+  # it pulls the image, reads the secrets, and writes log streams. The awslogs
   # driver runs agent-side, which is why the CloudWatch permissions belong here
   # and not on the task role.
   #
@@ -291,6 +335,69 @@ Resources:
     Properties:
       LogGroupName: /ecs/haris
       RetentionInDays: 14
+
+  # =========================================================================
+  # Out-of-process alerting
+  #
+  # Haris has its own Notifier, which reports what Haris observes — a crashed
+  # detector, a blocked leak, a failed health probe — over a webhook. It cannot
+  # report that Haris is NOT RUNNING, because the code that would send the
+  # message is the code that stopped. A crash-loop produces zero notifications
+  # from inside the container, indefinitely.
+  #
+  # This alarm covers exactly that case, from outside the container, on a path
+  # that shares no failure mode with the application. In-process alerting
+  # handles the application's failures; out-of-process alerting handles the
+  # application's absence.
+  # =========================================================================
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: haris-alerts
+      DisplayName: Haris deployment
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  DashboardDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: haris-dashboard-down
+      AlarmDescription: >
+        No healthy target behind the load balancer - the dashboard is not
+        serving. Covers both "running but failing its health check" and "task
+        gone entirely".
+      Namespace: AWS/ApplicationELB
+      # HealthyHostCount, not UnHealthyHostCount. A task that dies completely is
+      # DEREGISTERED from the target group, so UnHealthyHostCount reads 0 and an
+      # alarm on it would stay silent through the total outage it exists to
+      # catch. Counting what is healthy has no such blind spot.
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      # Three minutes. ECS keeps the old task serving until the replacement is
+      # healthy, so a normal rolling deploy should not dip to zero - but three
+      # periods keeps a slow replacement from paging anyone.
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      # Missing data means the target group has no targets at all, which is the
+      # outage, not the absence of one.
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      AlarmActions: [!Ref AlertTopic]
+      # Recovery is also worth an email: an alarm you only hear about once
+      # leaves you unsure whether it is still happening.
+      OKActions: [!Ref AlertTopic]
 
   ExecutionRole:
     Type: AWS::IAM::Role
@@ -327,10 +434,15 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/haris:*
-              - Sid: ReadTheOperatorTokenOnly
+              # Two ARNs, enumerated. Not a prefix, not a wildcard: this role
+              # can read exactly these two secrets and nothing else in the
+              # account's Secrets Manager.
+              - Sid: ReadTheTwoTaskSecretsOnly
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref DashboardSecretArn
+                Resource:
+                  - !Ref DashboardSecretArn
+                  - !Ref AuditKeySecretArn
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -386,11 +498,28 @@ Resources:
           #
           # CORS and XSRF protection therefore stay at their secure defaults,
           # and debug logging is off in normal operation.
-          # Resolved from Secrets Manager by the execution role at task start.
-          # The value is never in this template, the image, or version control.
+          #
+          # Both values below are resolved from Secrets Manager by the execution
+          # role at task start, so neither appears in this template, the image,
+          # version control, or `describe-task-definition` output.
+          #
+          #   HARIS_DASHBOARD_TOKEN - gates the operator console (authentication)
+          #   HARIS_AUDIT_KEY       - keys the audit hash chain (integrity)
+          #
+          # They answer different questions: who may READ the audit log, and
+          # whether the log can be silently REWRITTEN. Neither substitutes for
+          # the other, and without the second the chain is corruption-evident
+          # only, which is weaker than THREAT_MODEL.md section 2 claims.
+          #
+          # Note: secrets are read ONCE at task start. Rotating a value in
+          # Secrets Manager does not reach a running container - that needs a
+          # new task (`ecs update-service --force-new-deployment`, or any change
+          # to this task definition).
           Secrets:
             - Name: HARIS_DASHBOARD_TOKEN
               ValueFrom: !Ref DashboardSecretArn
+            - Name: HARIS_AUDIT_KEY
+              ValueFrom: !Ref AuditKeySecretArn
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -409,9 +538,19 @@ Resources:
       TaskDefinition: !Ref TaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
-      # 180s: the task must pull a 1.32 GB image before Python starts. The app
-      # itself is ready in ~2s, but without this grace period ECS can kill the
-      # task mid-pull and loop forever with no useful error.
+      # Without a circuit breaker a bad image is retried indefinitely - the
+      # exact "loop forever with no useful error" failure the grace period
+      # below is written to avoid. Rollback returns the service to the last
+      # task definition that reached a healthy target, automatically.
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      # 180s: the task must pull ~281 MiB of compressed layers (1.32 GB on
+      # disk) before Python starts, and Fargate caches nothing between task
+      # starts, so every replacement pays the full pull. The app itself is
+      # ready in ~2s, but without this grace period ECS can kill the task
+      # mid-pull.
       HealthCheckGracePeriodSeconds: 180
       NetworkConfiguration:
         AwsvpcConfiguration:
@@ -452,7 +591,35 @@ Outputs:
     Value: !GetAtt ExecutionRole.Arn
 
   TaskRoleArn:
-    Description: >
-      Screenshot this one too - an empty policy list is the least-privilege
-      result, not a missing step.
+    Description: An empty policy list is the least-privilege result, not a missing step.
     Value: !GetAtt TaskRole.Arn
+
+  AlertTopicArn:
+    Description: Confirm the email subscription before trusting this to alert.
+    Value: !Ref AlertTopic
+
+# ---------------------------------------------------------------------------
+# Created by hand, deliberately outside this stack — recorded here so the
+# deployment is reproducible from this file plus these three commands.
+#
+# They are kept out of the stack because they hold state that must survive
+# `delete-stack`: the image a rollback would need, and secrets whose loss is
+# not recoverable from a template.
+#
+#   aws ecr create-repository --repository-name haris \
+#       --image-tag-mutability IMMUTABLE \
+#       --image-scanning-configuration scanOnPush=true
+#
+#   aws secretsmanager create-secret --name haris/dashboard-token \
+#       --description "Operator token gating the dashboard" \
+#       --secret-string <256-bit value from a CSPRNG>
+#
+#   aws secretsmanager create-secret --name haris/audit-key \
+#       --description "HMAC key for the Haris audit hash chain" \
+#       --secret-string <256-bit value from a CSPRNG>
+#
+# Teardown is the mirror image and is scripted in teardown.ps1, which refuses
+# to run unless sts:GetCallerIdentity returns this account — `delete-stack`
+# against the wrong account fails with "stack does not exist", a message
+# indistinguishable from success.
+# ---------------------------------------------------------------------------

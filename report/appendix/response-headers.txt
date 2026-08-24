@@ -1,0 +1,14 @@
+﻿HTTP/1.1 200 OK
+Date: Mon, 24 Aug 2026 19:24:03 GMT
+Content-Type: text/html; charset=utf-8
+Content-Length: 10951
+Connection: keep-alive
+Set-Cookie: AWSALB=wX4UZ6uWYGL8YUPud/CSsStKLhviiLmImTfSUgw2lkg9IroFgxdYuwllu1s0LS3DsR4veZmkvWZowsLWOB8ZVVh9TrD1OWAlNSeF9qx/EFvv8w0HEdCEaI1nBrfS; Expires=Mon, 31 Aug 2026 19:24:03 GMT; Path=/
+Set-Cookie: AWSALBCORS=wX4UZ6uWYGL8YUPud/CSsStKLhviiLmImTfSUgw2lkg9IroFgxdYuwllu1s0LS3DsR4veZmkvWZowsLWOB8ZVVh9TrD1OWAlNSeF9qx/EFvv8w0HEdCEaI1nBrfS; Expires=Mon, 31 Aug 2026 19:24:03 GMT; Path=/; SameSite=None; Secure
+server: uvicorn
+accept-ranges: bytes
+last-modified: Sun, 23 Aug 2026 10:21:44 GMT
+etag: "982085dd65cde9a1c3f3bd823eaef5f0"
+cache-control: no-cache
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+

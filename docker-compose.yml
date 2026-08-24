@@ -14,7 +14,34 @@ services:
     # Config passed as env vars. Compose auto-loads a local .env for the ${...} values, so
     # the container starts even with no .env — but the dashboard REQUIRES an operator token
     # (HARIS_DASHBOARD_TOKEN) and fails closed without one. Set it in .env (see .env.example).
+    #
+    # HARIS_AUDIT_KEY keys the audit hash chain (HMAC). Blank is a working configuration,
+    # but a weaker one: the chain becomes corruption-evident rather than tamper-evident,
+    # because anyone who can write the log can also recompute it. The deployed task takes
+    # this from Secrets Manager; locally it comes from .env, and it is listed here so a
+    # value set in .env is actually passed through rather than silently ignored.
     environment:
       HARIS_DASHBOARD_TOKEN: ${HARIS_DASHBOARD_TOKEN:-}
       HARIS_ALERT_WEBHOOK: ${HARIS_ALERT_WEBHOOK:-}
+      HARIS_AUDIT_KEY: ${HARIS_AUDIT_KEY:-}
+    # The image already declares a HEALTHCHECK and Compose inherits it; it is restated here
+    # so the compose file alone tells a reader the container is health-checked, and so the
+    # interval is tunable without rebuilding.
+    #
+    # What this does NOT do: restart a hung container. Docker reports health, it does not
+    # act on it — `restart: unless-stopped` fires on process EXIT, and a Streamlit whose
+    # socket stops answering has not exited. What the healthcheck buys is an honest
+    # `docker compose ps` (healthy / unhealthy rather than merely "Up"), and the ability
+    # for another service to wait on `depends_on: condition: service_healthy`. Acting on
+    # the signal is the orchestrator's job — in production the ALB drains the target and
+    # ECS replaces the task.
+    #
+    # start_period is 90s: the first request loads Presidio and spaCy and replays the demo
+    # battery, so an earlier probe reports unhealthy while the container is merely starting.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
     restart: unless-stopped
