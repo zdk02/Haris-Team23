@@ -1,13 +1,13 @@
 {
-  "scenarios": 408,
+  "scenarios": 432,
   "attacks": 264,
-  "benign": 144,
+  "benign": 168,
   "detection_rate": 0.8485,
   "leak_prevention_rate": 0.7576,
-  "false_positive_rate": 0.0,
-  "utility_rate": 1.0,
-  "latency_avg_ms": 8.9667,
-  "latency_p95_ms": 11.923,
+  "false_positive_rate": 0.1429,
+  "utility_rate": 0.8571,
+  "latency_avg_ms": 8.8546,
+  "latency_p95_ms": 11.712,
   "by_leak_style": {
     "verbatim": {
       "n": 48,
@@ -16,10 +16,10 @@
       "false_positive": null
     },
     "derived": {
-      "n": 144,
+      "n": 168,
       "detection": 1.0,
       "prevention": 1.0,
-      "false_positive": 0.0
+      "false_positive": 0.25
     },
     "paraphrase": {
       "n": 24,
@@ -48,48 +48,48 @@
   },
   "by_domain": {
     "hospital": {
-      "n": 102,
+      "n": 108,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     },
     "education": {
-      "n": 102,
+      "n": 108,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     },
     "finance": {
-      "n": 102,
+      "n": 108,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     },
     "hr": {
-      "n": 102,
+      "n": 108,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     }
   },
   "by_topology": {
     "chain": {
-      "n": 136,
+      "n": 144,
       "detection": 0.9091,
       "prevention": 0.8182,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     },
     "star": {
-      "n": 136,
+      "n": 144,
       "detection": 0.8182,
       "prevention": 0.7273,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     },
     "branch": {
-      "n": 136,
+      "n": 144,
       "detection": 0.8182,
       "prevention": 0.7273,
-      "false_positive": 0.0
+      "false_positive": 0.1429
     }
   },
   "by_difficulty": {
@@ -214,6 +214,12 @@
       "detection": 1.0,
       "prevention": 0.0,
       "false_positive": null
+    },
+    "internal_handoff": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 1.0
     }
   }
 }
