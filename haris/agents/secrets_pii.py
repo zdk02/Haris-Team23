@@ -35,6 +35,27 @@ the info-flow spike uses). ``redacted_content`` is deliberately *not* set on a
 PASS — the engine treats any above-threshold verdict with redacted content as
 a redaction request.
 
+WHAT COUNTS AS EGRESS (tasks I2 / K6, applied here 2026-08-24).
+Redaction is gated on egress, and "egress" means a destination this deployment
+has NOT agreed to send to — not merely one outside the network boundary. A
+referral clinic with a data-sharing agreement is external and permitted, and
+scrubbing the patient's name out of a referral is not caution, it is a broken
+referral: the receiving clinician gets ``<PERSON>`` and cannot tell whose case
+it is.
+
+This was the last of the four agents to learn that, and the cost was measured
+rather than guessed. With Presidio ON, before the agreements were passed in:
+22 of 24 legitimate partner referrals had the patient's name redacted — 92% on
+that family, 15% overall, against 0% in the Presidio-OFF configuration where
+this agent is not present. The snapshot is committed as
+``demo_app/eval/presidio_on.json`` (tag ``presidio-on-before-partner-fix``).
+
+Two of the 24 were NOT redacted, which is its own finding and not a success:
+Presidio failed to detect those names at all. Non-Anglo surnames fare worse
+than Anglo ones in the default spaCy model, so a family whose false-positive
+rate is 92% rather than 100% is telling you about the detector's recall, not
+about this agent's policy. Reported in §8.
+
 Nothing hospital-specific is hardcoded; entity types, weights, thresholds,
 plugins, and the spaCy model are constructor arguments with sensible defaults.
 """
@@ -44,6 +65,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from haris.agents.base import SecurityAgent
+from haris.agents.partners import normalise_partners, partner_allows
 from haris.schemas.message import Message
 from haris.schemas.verdict import Label, Verdict
 
@@ -236,6 +258,7 @@ class SecretsPIIAgent(SecurityAgent):
         secret_mask: str = DEFAULT_SECRET_MASK,
         *,
         internal_domains: Iterable[str] = ("hospital.internal",),
+        authorized_partners: Iterable = (),
         redact_on_egress_only: bool = True,
         treat_missing_recipient_as_internal: bool = True,
         always_redact_secrets: bool = False,
@@ -248,15 +271,21 @@ class SecretsPIIAgent(SecurityAgent):
         self.secret_mask = secret_mask
         # Boundary-awareness (mirrors AuthorizationAgent / InformationFlowAgent):
         #   redact_on_egress_only=True  -> DETECT everywhere (always logged for the audit
-        #     trail), but only rewrite content (-> REDACT) when the message is leaving the
-        #     trust boundary. On a safe internal hop the finding is FLAGged and the content
-        #     is delivered UNCHANGED, so PII a downstream agent legitimately needs (e.g. the
-        #     patient's name to the treating doctor) is not scrubbed and never mangled.
+        #     trail), but only rewrite content (-> REDACT) when the message is leaving for
+        #     a destination we have not agreed to send to. On a safe hop the finding is
+        #     FLAGged and the content is delivered UNCHANGED, so PII a downstream agent
+        #     legitimately needs (the patient's name to the treating doctor, or to the
+        #     referral clinic the agreement names) is not scrubbed and never mangled.
         #   redact_on_egress_only=False -> the original destination-agnostic behavior:
         #     redact wherever anything is detected.
-        #   always_redact_secrets=True  -> credential exception: even on an internal hop,
+        #   always_redact_secrets=True  -> credential exception: even on a safe hop,
         #     mask hard secrets (keys/tokens) while still letting PII through.
         self.internal_domains = tuple(d.lstrip("@").lower() for d in internal_domains)
+        # Data-sharing agreements, in the same shape the other agents take: a bare
+        # address, or an (address, subjects) pair. Empty by default, which is the
+        # behaviour that redacted 22 of 24 legitimate referrals — see the module
+        # docstring for the measurement.
+        self.authorized_partners = normalise_partners(authorized_partners)
         self.redact_on_egress_only = redact_on_egress_only
         self.treat_missing_recipient_as_internal = treat_missing_recipient_as_internal
         self.always_redact_secrets = always_redact_secrets
@@ -274,8 +303,8 @@ class SecretsPIIAgent(SecurityAgent):
         if severity < self.flag_threshold:
             return self._pass(severity, findings)
 
-        # Boundary decision: rewrite content only when leaving the trust boundary
-        # (or when not configured to gate on egress at all).
+        # Boundary decision: rewrite content only when the destination is one we have
+        # not agreed to send to (or when not configured to gate on egress at all).
         enforce_here = (not self.redact_on_egress_only) or self._is_egress(message)
 
         if enforce_here:
@@ -290,8 +319,14 @@ class SecretsPIIAgent(SecurityAgent):
                 redacted_content=redacted,
             )
 
-        # Safe internal hop: log the finding, deliver unchanged. Optionally still mask
+        # Permitted destination: log the finding, deliver unchanged. Optionally still mask
         # hard secrets (never PII) so a credential can't be forwarded even internally.
+        #
+        # The reason string still says "internal hop" — a partner referral now takes this
+        # branch too, so the wording is a shade narrow. Left as it was on purpose:
+        # tests/test_secrets_pii.py asserts it, the phrase appears in audit records that
+        # predate this change, and renaming a log line is not worth a corpus-wide diff in
+        # the last week. Worth tidying afterwards, alongside the audit-format review.
         if self.always_redact_secrets and secret_hits:
             redacted = SecretsDetector.redact(text, secret_hits, self.secret_mask)
             return Verdict(
@@ -312,12 +347,23 @@ class SecretsPIIAgent(SecurityAgent):
     # -- boundary helpers --------------------------------------------------- #
 
     def _is_egress(self, message: Message) -> bool:
-        """True if this hop delivers to a recipient outside the trust boundary."""
-        recipient = (message.metadata or {}).get("recipient")
+        """True if this hop delivers somewhere we have NOT agreed to send to.
+
+        Two ways a destination can be permitted, kept apart on purpose: inside the trust
+        boundary, or an external party this deployment holds an agreement with — and,
+        when that agreement names data subjects, one covering THIS subject. Redaction
+        then follows the same policy Authorization and Info-flow enforce, rather than a
+        second and stricter notion of "outside" that refuses referrals those two allow.
+        """
+        md = message.metadata or {}
+        recipient = md.get("recipient")
         if not recipient:
             # No recipient = an internal agent-to-agent handoff, not an external send.
             return not self.treat_missing_recipient_as_internal
-        return not self._is_internal(str(recipient))
+        if self._is_internal(str(recipient)):
+            return False
+        return not partner_allows(self.authorized_partners, str(recipient),
+                                  md.get("data_subject"))
 
     def _is_internal(self, recipient: str) -> bool:
         r = recipient.lower()

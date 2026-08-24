@@ -95,7 +95,13 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
 
     if include_secrets:
         from haris.agents.secrets_pii import SecretsPIIAgent
-        agents.append(SecretsPIIAgent(internal_domains=(domain.internal_domain,)))
+        # Same agreements the other agents get: a partner referral is a permitted
+        # destination, so PII the referral legitimately needs is delivered rather than
+        # scrubbed. Without this the agent redacted 22 of 24 legitimate referrals.
+        agents.append(SecretsPIIAgent(
+            internal_domains=(domain.internal_domain,),
+            authorized_partners=domain.authorized_partners,
+        ))
 
     agents.append(AuthorizationAgent(
         rules=list(domain.rules),

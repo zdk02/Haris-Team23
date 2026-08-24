@@ -4,10 +4,10 @@
   "benign": 144,
   "detection_rate": 0.8485,
   "leak_prevention_rate": 0.7576,
-  "false_positive_rate": 0.1528,
-  "utility_rate": 0.8472,
-  "latency_avg_ms": 9.7692,
-  "latency_p95_ms": 13.232,
+  "false_positive_rate": 0.0,
+  "utility_rate": 1.0,
+  "latency_avg_ms": 8.9667,
+  "latency_p95_ms": 11.923,
   "by_leak_style": {
     "verbatim": {
       "n": 48,
@@ -19,7 +19,7 @@
       "n": 144,
       "detection": 1.0,
       "prevention": 1.0,
-      "false_positive": 0.3056
+      "false_positive": 0.0
     },
     "paraphrase": {
       "n": 24,
@@ -51,25 +51,25 @@
       "n": 102,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.1667
+      "false_positive": 0.0
     },
     "education": {
       "n": 102,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.1667
+      "false_positive": 0.0
     },
     "finance": {
       "n": 102,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.1389
+      "false_positive": 0.0
     },
     "hr": {
       "n": 102,
       "detection": 0.8485,
       "prevention": 0.7576,
-      "false_positive": 0.1389
+      "false_positive": 0.0
     }
   },
   "by_topology": {
@@ -77,19 +77,19 @@
       "n": 136,
       "detection": 0.9091,
       "prevention": 0.8182,
-      "false_positive": 0.125
+      "false_positive": 0.0
     },
     "star": {
       "n": 136,
       "detection": 0.8182,
       "prevention": 0.7273,
-      "false_positive": 0.1667
+      "false_positive": 0.0
     },
     "branch": {
       "n": 136,
       "detection": 0.8182,
       "prevention": 0.7273,
-      "false_positive": 0.1667
+      "false_positive": 0.0
     }
   },
   "by_difficulty": {
@@ -183,7 +183,7 @@
       "n": 24,
       "detection": null,
       "prevention": null,
-      "false_positive": 0.9167
+      "false_positive": 0.0
     },
     "same_subject": {
       "n": 24,
