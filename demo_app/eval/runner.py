@@ -7,12 +7,16 @@ generated label:
                                         scenario's DECISIVE hop (see `_run_arm`)?
   * enforce   (agents, ENFORCE)      -> PREVENTION: was the message actually blocked/redacted?
 
-There is deliberately no "no-Haris" arm. Running an empty agent list in monitor mode cannot
-stop anything, so its 100% leak rate was fixed before the run started -- a constant, not a
-measurement. The reference point is measured instead, by leak_check.py: a scenario leaks
-when content reaching an unauthorised recipient still carries an injected identifier, and
-the same rule scores every arm. Measured on untouched traffic: 120 of 192 attack scenarios
-leak, not 192.
+There is deliberately no "no-Haris" arm here. Running an empty agent list in monitor mode
+cannot stop anything, so its 100% leak rate was fixed before the run started -- a constant,
+not a measurement. The reference point is measured instead, by leak_check.py: a scenario
+leaks when content reaching an unauthorised recipient still carries an injected identifier,
+or when one subject's record surfaces in a message declared about another. The same rule
+scores every arm. Measured on untouched traffic: 120 of 192 attack scenarios leak, not 192.
+
+Non-Haris comparison arms -- a no-op, a per-message content scanner, and the six-line
+metadata heuristic from finding 01 -- live in `demo_app/eval/baselines.py` (task L) and are
+scored by the same rule. Run `python -m demo_app.eval.baselines` for the four-arm table.
 
 Then it reports, overall and broken down by leak-style / domain / family:
   * detection rate       (of labelled attacks, fraction detected in monitor)
@@ -108,23 +112,24 @@ _DIFFICULTY = {
 def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     agents = build_agents(DOMAINS[scn.domain], include_secrets)
     label_attack, _ = label_consistency_check(scn)
-    # NOTE: there is no "without Haris" arm. Running an EMPTY agent list in monitor mode
-    # cannot stop anything -- most_restrictive([]) is ALLOW and monitor clamps above FLAG
-    # anyway -- so its output was a constant, not a measurement. That every attack scenario
-    # leaks absent mediation is a property of how the corpus is CONSTRUCTED; it is stated
-    # in report() and must not be presented as an experimental result. Comparison arms that
-    # are not Haris -- a per-message content scanner, a metadata heuristic -- are task L and
-    # are NOT WRITTEN YET; `baselines.py` does not exist. Five files cited it as though it
-    # did, which is the same failure this comment is about, one level up.
+    # NOTE: there is no "without Haris" arm in THIS module. Running an EMPTY agent list in
+    # monitor mode cannot stop anything -- most_restrictive([]) is ALLOW and monitor clamps
+    # above FLAG anyway -- so its output was a constant, not a measurement. That every
+    # attack scenario leaks absent mediation is a property of how the corpus is
+    # CONSTRUCTED; it is stated in report() and must not be presented as an experimental
+    # result. Comparison arms that are not Haris live in baselines.py (task L) and are
+    # scored by the same rule as this module; see `python -m demo_app.eval.baselines`.
     _, detected, _, _ = _run_arm(scn, agents, Mode.MONITOR)              # detection
     stopped, _, lat, delivered = _run_arm(scn, agents, Mode.ENFORCE, want_latency=True)
 
     # The reference arm. NOT "Haris with no agents" -- that configuration always allows, so
     # its result was a constant. This is the scenario's own traffic delivered untouched,
     # scored by the same external rule as every other arm: did an unauthorised recipient
-    # actually receive the injected secret? It can, and does, come out below 100%.
+    # actually receive the injected secret, or did one subject's record surface under
+    # another subject's label? It can, and does, come out below 100%.
     dom = DOMAINS[scn.domain]
     args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
+    subj_ids = scn.subject_identifiers()
     return {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
@@ -133,8 +138,8 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "detected": detected, "stopped": stopped,
         # measured outcomes, independent of any detector's verdict
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
-        "leak_unmediated": leaked(list(scn.messages), *args),
-        "leak_haris": leaked(delivered, *args),
+        "leak_unmediated": leaked(list(scn.messages), *args, subject_identifiers=subj_ids),
+        "leak_haris": leaked(delivered, *args, subject_identifiers=subj_ids),
         "latencies": lat,
     }
 
@@ -178,7 +183,8 @@ def report(records: list[dict]) -> None:
     print(f"  ...that DO leak unmediated    : {len(real)}  "
           f"({len(egress)-len(real)} egress but carry no identifier to leak)")
     print( "  A secret 'leaks' when content reaching an unauthorised recipient still")
-    print( "  carries an injected identifier. Same rule scores every arm.\n")
+    print( "  carries an injected identifier, or when one subject's record surfaces in a")
+    print( "  message declared about another. Same rule scores every arm.\n")
     print("HEADLINE")
     print(f"  leak prevention: {len(real)-still}/{len(real)} of the scenarios that actually "
           f"leak -> {_pct((len(real)-still)/len(real)) if real else '—'}")

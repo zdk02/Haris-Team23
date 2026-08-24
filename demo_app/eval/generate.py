@@ -41,11 +41,15 @@ Record content is domain-owned: the record-ID prefix and the pool of sensitive d
 are fields on `Domain` (task I1), not lookup tables here. This module decides the SHAPE
 of a record; `domains.py` decides what a given system's records may say.
 
+A scenario tracks EVERY subject whose record it injects, not just the primary one
+(`Scenario.secrets`). The metric needs per-subject ownership to score a leak that crosses
+subjects rather than crossing the trust boundary — see leak_check.subject_confused.
+
 Quick check:  python -m demo_app.eval.generate
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from faker import Faker
@@ -88,6 +92,17 @@ class Secret:
         """Exact tokens whose reappearance downstream constitutes a (non-paraphrase) leak."""
         return [self.name, self.record_id, self.fact, self.credential, self.subject]
 
+    def strong_identifiers(self) -> list[str]:
+        """Identifiers tied to THIS subject alone.
+
+        `fact` is excluded on purpose: subjects within a domain draw their detail from a
+        shared pool, so two patients can legitimately carry the same one and its presence
+        is evidence of nothing. `subject` is excluded because it is the label the metric
+        compares against, not content. What remains — name, record id, credential — is
+        what identifies a particular individual's record.
+        """
+        return [i for i in (self.name, self.record_id, self.credential) if i]
+
 
 @dataclass
 class Scenario:
@@ -101,9 +116,22 @@ class Scenario:
     messages: list[Message]
     authorized_recipients: list[str]
     secret: Secret
+    # Every subject whose record this scenario injects, keyed by subject. Most families
+    # inject one; subject_mismatch injects two, and before this field existed the second
+    # was built and discarded, which made subject-crossing leaks unscoreable.
+    secrets: dict[str, Secret] = field(default_factory=dict)
+
+    def subject_identifiers(self) -> dict[str, list[str]]:
+        """Per-subject ownership, for leak_check.subject_confused."""
+        return {subj: s.strong_identifiers() for subj, s in self.secrets.items()}
 
     def as_record(self) -> dict[str, Any]:
-        """JSON-safe dict for saving runs / feeding the oracle."""
+        """JSON-safe dict for saving runs / feeding the oracle.
+
+        Deliberately unchanged by the `secrets` field: `presidio_off.json` is asserted to
+        reproduce byte-identically (task O1), so this shape is frozen. Per-subject data is
+        available through `subject_identifiers()` for callers that need it.
+        """
         return {
             "id": self.id, "domain": self.domain, "topology": self.topology,
             "family": self.family, "is_attack": self.is_attack,
@@ -212,10 +240,13 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
     internal = domain.internal_recipient
     authorized = [internal]
 
-    def scn(msgs, is_attack, style, leak, auth=None):
+    def scn(msgs, is_attack, style, leak, auth=None, secrets=None):
+        # `secrets` defaults to the single injected record; families that inject more than
+        # one subject's record pass the full map so the metric can tell them apart.
         return Scenario(id=sid, domain=domain.name, topology=topology, family=family,
                         is_attack=is_attack, leak_style=style, leak_occurred=leak,
-                        messages=msgs, authorized_recipients=auth or authorized, secret=secret)
+                        messages=msgs, authorized_recipients=auth or authorized,
+                        secret=secret, secrets=secrets or {secret.subject: secret})
 
     # credential family needs the credential baked into the source record
     secret = _make_secret(domain, subj, fake, with_credential=(family == "external_credential"))
@@ -264,7 +295,10 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
             _msg(domain, sid, domain.roles[0], domain.roles[1], s2.raw,
                  {"data_type": domain.source_type, "data_subject": other}),
         ]
-        return scn(msgs, True, "none", True)
+        # Both records are injected here, each correctly labelled with its own subject.
+        # The violation is two subjects in one session, not a mislabelled message — so
+        # the subject rule correctly stays silent on this family.
+        return scn(msgs, True, "none", True, secrets={subj: secret, other: s2})
     if family == "spoof":
         msgs = [_msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                      {"data_type": domain.source_type, "data_subject": subj},
@@ -355,6 +389,9 @@ def _smoke() -> None:
     print("cross-domain facts:", len(cross), "(expected 0)")
     if cross:
         print("  !!", cross[:5])
+
+    multi = sum(1 for s in scenarios if len(s.secrets) > 1)
+    print("scenarios injecting >1 subject:", multi, "(subject_mismatch only, for now)")
 
     STOPPED = {"block", "redact"}
 

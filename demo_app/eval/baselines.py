@@ -252,13 +252,15 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     label_attack, _ = label_consistency_check(scn)
     dom = DOMAINS[scn.domain]
     args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
+    subj_ids = scn.subject_identifiers()
 
     row: dict = {
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
         "label_attack": label_attack,
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
-        "leak_unmediated": leaked(list(scn.messages), *args),
+        "leak_unmediated": leaked(list(scn.messages), *args,
+                                  subject_identifiers=subj_ids),
         "arms": {},
     }
     for arm in ARMS:
@@ -266,7 +268,7 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         row["arms"][arm.key] = {
             "stopped": res.stopped,
             "detected": res.detected,
-            "leaked": leaked(res.delivered, *args),
+            "leaked": leaked(res.delivered, *args, subject_identifiers=subj_ids),
             "latencies": res.latencies,
         }
     return row
@@ -320,8 +322,9 @@ def report(rows: list[dict]) -> None:
     print("FOUR-ARM COMPARISON")
     print(f"  {len(rows)} scenarios · {len(attacks)} attacks · {len(benign)} benign")
     print(f"  prevention denominator: {len(real)} scenarios that actually leak untouched")
-    print( "  every arm scored by the same rule: did an injected identifier reach an")
-    print( "  unauthorised recipient in what that arm delivered?\n")
+    print( "  every arm scored by the same rule: in what that arm delivered, did an")
+    print( "  injected identifier reach an unauthorised recipient, or did one subject's")
+    print( "  record surface in a message declared about another?\n")
 
     print(f"  {'arm':<20}{'prevention':>12}{'false pos':>12}{'utility':>10}{'ms/hop':>10}")
     for arm in ARMS:
