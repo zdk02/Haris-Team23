@@ -569,7 +569,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
 # Generator
 # --------------------------------------------------------------------------- #
 
-def generate(variants: int = 2) -> list[Scenario]:
+def generate(variants: int = 2, seed: int = SEED) -> list[Scenario]:
     """Deterministically produce scenarios across every domain × topology × family.
 
     Generation runs in TWO PASSES: the original families first, in their original order,
@@ -579,9 +579,14 @@ def generate(variants: int = 2) -> list[Scenario]:
     `slot` counts occurrences of a family across the whole corpus and is what assigns
     ladder rungs (task M2). It is derived from position, never from the RNG, so the rung
     distribution is exactly equal regardless of seed.
+
+    `seed` defaults to the fixed SEED so every committed number is reproducible. It is a
+    parameter so the results can be checked for SEED SENSITIVITY (see seed_sweep.py):
+    changing it redraws every name, record id and credential while leaving the structure
+    of each family identical, which is exactly the axis a detector's recall varies along.
     """
     fake = Faker()
-    fake.seed_instance(SEED)   # deterministic: same seed -> same scenarios every run
+    fake.seed_instance(seed)   # deterministic: same seed -> same scenarios every run
     original = tuple(f for f in ATTACK_FAMILIES + BENIGN_FAMILIES
                      if f not in APPENDED_FAMILIES)
     out: list[Scenario] = []

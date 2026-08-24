@@ -63,6 +63,7 @@ from demo_app.eval.generate import Scenario, generate
 from demo_app.eval.leak_check import egresses, external_confirms, leaked, unauthorised
 from demo_app.eval.oracle import label_consistency_check
 from demo_app.eval.runner import _run_arm as _haris_arm
+from demo_app.eval.stats import Interval, rate_ci
 from haris.schemas.policy import Mode
 from demo_app.eval.domains import build_agents
 
@@ -313,6 +314,25 @@ def _false_positive(rows: list[dict], key: str) -> Optional[float]:
     return sum(1 for r in benign if r["arms"][key]["stopped"]) / len(benign)
 
 
+def _prevention_ci(rows: list[dict], key: str) -> Optional[Interval]:
+    """Prevention with its 95% interval (task M4).
+
+    Same denominator as `_prevention`; the interval is what stops a reader taking a
+    per-family 0% or 100% from n=24 as firmly as the headline from n=168.
+    """
+    real = [r for r in rows if r["label_attack"] and r["leak_unmediated"]]
+    if not real:
+        return None
+    return rate_ci([{"ok": not r["arms"][key]["leaked"]} for r in real], "ok")
+
+
+def _false_positive_ci(rows: list[dict], key: str) -> Optional[Interval]:
+    benign = [r for r in rows if not r["label_attack"]]
+    if not benign:
+        return None
+    return rate_ci([{"fp": r["arms"][key]["stopped"]} for r in benign], "fp")
+
+
 def _avg_latency(rows: list[dict], key: str) -> Optional[float]:
     lat = [x for r in rows for x in r["arms"][key]["latencies"]]
     return (sum(lat) / len(lat)) if lat else None
@@ -330,14 +350,16 @@ def report(rows: list[dict]) -> None:
     print( "  injected identifier reach an unauthorised recipient, or did one subject's")
     print( "  record surface in a message declared about another?\n")
 
-    print(f"  {'arm':<20}{'prevention':>12}{'false pos':>12}{'utility':>10}{'ms/hop':>10}")
+    print( "  95% bootstrap CI in brackets (task M4). The arms share a corpus, so the")
+    print( "  DIFFERENCES between them are better evidence than any single rate.\n")
+    print(f"  {'arm':<20}{'prevention':>20}{'false pos':>20}{'ms/hop':>10}")
     for arm in ARMS:
-        prev = _prevention(rows, arm.key)
-        fp = _false_positive(rows, arm.key)
-        util = None if fp is None else 1 - fp
+        prev = _prevention_ci(rows, arm.key)
+        fp = _false_positive_ci(rows, arm.key)
         lat = _avg_latency(rows, arm.key)
         lat_s = "—" if lat is None else f"{lat:.2f}"
-        print(f"  {arm.label:<20}{_pct(prev):>12}{_pct(fp):>12}{_pct(util):>10}{lat_s:>10}")
+        print(f"  {arm.label:<20}{(prev.pct() if prev else '—'):>20}"
+              f"{(fp.pct() if fp else '—'):>20}{lat_s:>10}")
     print()
     for arm in ARMS:
         print(f"  {arm.label:<20} {arm.blurb}")
@@ -347,13 +369,19 @@ def report(rows: list[dict]) -> None:
     fams = defaultdict(list)
     for r in attacks:
         fams[r["family"]].append(r)
-    header = "".join(f"{a.key:>12}" for a in ARMS)
+    header = "".join(f"{a.key:>18}" for a in ARMS)
     print(f"  {'family':<24}{'n':>4}{header}")
     for fam in sorted(fams):
         rs = fams[fam]
         n = sum(1 for r in rs if r["leak_unmediated"])
-        cells = "".join(f"{_pct(_prevention(rs, a.key)):>12}" for a in ARMS)
+        cells = ""
+        for a in ARMS:
+            ci = _prevention_ci(rs, a.key)
+            cells += f"{(ci.pct() if ci else '—'):>18}"
         print(f"  {fam:<24}{n:>4}{cells}")
+    print("  Every per-family n is 24 or fewer, so read the COLUMNS against each other")
+    print("  rather than any cell on its own: an arm at 0% and an arm at 100% on the same")
+    print("  24 scenarios differ regardless of how wide either interval is.")
 
     # Per-rung, all four arms. The scanner has the same literal-matching weakness Haris
     # does, so the interesting question is whether the ladder separates them at all.
@@ -367,8 +395,15 @@ def report(rows: list[dict]) -> None:
         for rung in sorted(by):
             rs = by[rung]
             n = sum(1 for r in rs if r["leak_unmediated"])
-            cells = "".join(f"{_pct(_prevention(rs, a.key)):>12}" for a in ARMS)
+            cells = ""
+            for a in ARMS:
+                ci = _prevention_ci(rs, a.key)
+                cells += f"{(ci.pct() if ci else '—'):>18}"
             print(f"  {rung:<24}{n:>4}{cells}")
+        print("  n=4 per rung: the intervals are far too wide to quote as rates. What the")
+        print("  ladder shows is the ORDER — layout changes recovered by normalisation,")
+        print("  encodings not — and that the metadata arm is flat across all six because")
+        print("  it never opens the payload.")
 
     print("\nFALSE POSITIVES BY FAMILY  (benign families only)")
     bfams = defaultdict(list)
@@ -377,7 +412,10 @@ def report(rows: list[dict]) -> None:
     print(f"  {'family':<24}{'n':>4}{header}")
     for fam in sorted(bfams):
         rs = bfams[fam]
-        cells = "".join(f"{_pct(_false_positive(rs, a.key)):>12}" for a in ARMS)
+        cells = ""
+        for a in ARMS:
+            ci = _false_positive_ci(rs, a.key)
+            cells += f"{(ci.pct() if ci else '—'):>18}"
         print(f"  {fam:<24}{len(rs):>4}{cells}")
 
     print("\nREAD THIS BEFORE QUOTING THE TABLE")

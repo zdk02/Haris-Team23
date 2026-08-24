@@ -33,6 +33,7 @@ Run:  python -m demo_app.eval.runner
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Optional
 
 from haris.audit import AuditLog
 from haris.orchestrator.orchestrator import Orchestrator
@@ -149,8 +150,8 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
     }
 
 
-def run_all(include_secrets: bool = False) -> list[dict]:
-    scenarios = generate()
+def run_all(include_secrets: bool = False, seed: Optional[int] = None) -> list[dict]:
+    scenarios = generate() if seed is None else generate(seed=seed)
     # small warm-up so reported latency is steady-state, not cold-start
     for scn in scenarios[:5]:
         _run_arm(scn, build_agents(DOMAINS[scn.domain], include_secrets), Mode.ENFORCE, True)
