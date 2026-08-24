@@ -226,6 +226,17 @@ class AuditLog:
     def records(self) -> list[AuditRecord]:
         return list(self._records)
 
+    @property
+    def is_keyed(self) -> bool:
+        """True when the chain links are HMACs rather than plain SHA-256.
+
+        Worth exposing rather than assuming. Unkeyed, verify_chain() still returns True for
+        a log an attacker rewrote and recomputed, so "the chain verifies" means something
+        materially weaker. Any surface that shows the first without the second overstates
+        the property.
+        """
+        return bool(self._key)
+
     def head(self) -> str:
         """The chain's current tip — the last record's entry_hash.
 

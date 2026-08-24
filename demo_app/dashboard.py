@@ -97,6 +97,9 @@ h1,h2,h3{ font-family:var(--f-display); }
 .pill.env{ color:var(--agent); background:rgba(90,169,255,.1); border-color:rgba(90,169,255,.2); border-radius:8px; }
 .pill.live{ color:var(--allow); background:var(--allow-dim); border-color:rgba(53,214,164,.25); font-weight:600; letter-spacing:.06em; }
 .pill.live .pulse{ display:inline-block; width:8px;height:8px;border-radius:50%;background:var(--allow); margin-right:6px; box-shadow:0 0 6px var(--allow);}
+.pill.chain{ color:var(--allow); background:var(--allow-dim); border-color:rgba(53,214,164,.25); font-weight:600; }
+.pill.chain.broken{ color:var(--block); background:var(--block-dim); border-color:rgba(255,92,114,.35); }
+.pill.chain.unkeyed{ color:var(--flag); background:var(--surface-2); }
 .kpis{ display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:6px; }
 .kpi{ background:var(--surface-1); border:1px solid var(--hairline-soft); border-radius:12px; padding:14px 16px; }
 .kpi .k-label{ font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--text-mut); }
@@ -246,15 +249,34 @@ def _replay_stamp() -> str:
     live feed - labelling it LIVE overstated what a grader is looking at."""
     return datetime.now().strftime("%H:%M:%S")
 
-def _topbar(mode, scenario):
+def _chain_pill(chain) -> str:
+    """P4 — the tamper-evidence badge.
+
+    Reports TWO facts, not one. `verified` says the chain is internally consistent;
+    `keyed` says that consistency was HMAC'd with a secret whoever can write the log does
+    not hold. Unkeyed, a rewritten-and-recomputed log still verifies — so a badge showing
+    only "verified" would claim tamper-evidence the deployment does not have. The deployed
+    task takes HARIS_AUDIT_KEY from Secrets Manager; a local run without it says so.
+    """
+    if not chain:
+        return ""
+    n = chain.get("records", 0)
+    if not chain.get("verified"):
+        return f'<span class="pill chain broken">chain BROKEN · {n} records</span>'
+    if chain.get("keyed"):
+        return f'<span class="pill chain">tamper-evident · chain verified across {n} records</span>'
+    return f'<span class="pill chain unkeyed">chain verified · {n} records · unkeyed</span>'
+
+
+def _topbar(mode, scenario, chain=None):
     st.markdown(
         '<div class="topbar"><h1>Haris <span class="muted">/ clinical-assistant · hospital-demo</span></h1>'
         f'<span class="pill">{html.escape(scenario)}</span>'
         '<span class="pill env">langgraph · haris</span>'
         f'<span class="pill">mode · {mode.value}</span>'
-        f'<span class="pill">replay · {html.escape(_replay_stamp())}</span></div>',
+        f'<span class="pill">replay · {html.escape(_replay_stamp())}</span>'
+        f'{_chain_pill(chain)}</div>',
         unsafe_allow_html=True)
-
 
 def _alert_banner(incidents):
     """Phase 4 — the always-on operator view of the notification system. Renders whatever
@@ -583,9 +605,9 @@ def main():
     subjects = sorted({r["data_subject"] for r in recs if r["data_subject"]})
     st.session_state.setdefault("sel", 0)
 
-    _topbar(mode, scenario)
+    _topbar(mode, scenario, data.get("chain"))
     _alert_banner(data.get("incidents", []))
-
+    
     if page == "Overview":
         _kpis(kpis)
         left, right = st.columns([1.55, 1], gap="large")

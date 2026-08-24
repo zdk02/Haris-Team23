@@ -400,4 +400,11 @@ def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> di
         "sessions": [sc.label for sc in SCENARIOS],
         "subjects": sorted({r["data_subject"] for r in records if r["data_subject"]}),
         "incidents": [_incident_dict(e) for e in incidents_buffer.events()],
+        # P4 — what the topbar badge renders. Two facts, deliberately: whether the chain
+        # is intact, and whether it was keyed. See AuditLog.is_keyed.
+        "chain": {
+            "verified": audit.verify_chain(),
+            "records": len(audit),
+            "keyed": audit.is_keyed,
+        },
     }

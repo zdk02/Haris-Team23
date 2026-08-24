@@ -160,3 +160,17 @@ def test_run_battery_produces_a_verifiable_audit_chain():
     audit = run_battery(mode=Mode.ENFORCE, include_secrets=False)
     assert len(audit) == 2 * len(SCENARIOS)
     assert audit.verify_chain() is True
+
+def test_dashboard_reports_a_verifiable_chain():
+    chain = get_dashboard(include_secrets=False)["chain"]
+    assert chain["records"] > 0
+    assert chain["verified"] is True
+
+
+def test_chain_badge_reports_keyed_state_honestly(monkeypatch):
+    """A badge that always says "tamper-evident" is decoration. This asserts it tracks
+    reality in both directions."""
+    monkeypatch.delenv("HARIS_AUDIT_KEY", raising=False)
+    assert get_dashboard(include_secrets=False)["chain"]["keyed"] is False
+    monkeypatch.setenv("HARIS_AUDIT_KEY", "a-test-key")
+    assert get_dashboard(include_secrets=False)["chain"]["keyed"] is True
