@@ -220,6 +220,15 @@ def report(records: list[dict]) -> None:
         print(f"  latency/hop   : {sum(all_lat)/len(all_lat):.2f} ms avg · {p95:.2f} ms p95")
 
     def breakdown(title, key, rows):
+        """Every column carries its 95% interval (task M4).
+
+        An earlier version put one only on the false-positive column, on the grounds
+        that it was the number most likely to be over-read. That was the wrong call: a
+        family reading `prevent=33%` from 24 observations is exactly as easy to quote as
+        a result, and the four-arm table already showed the same figure with its
+        interval. Printing a number two ways, one of them bare, invites a reader to pick
+        the confident-looking one.
+        """
         print(f"\n{title}")
         groups = defaultdict(list)
         for r in rows:
@@ -228,13 +237,13 @@ def report(records: list[dict]) -> None:
             rs = groups[g]
             atk = [r for r in rs if r["label_attack"]]
             ben = [r for r in rs if not r["label_attack"]]
-            det = _pct(_rate(atk, "detected")) if atk else "—"
-            prev = _pct(_rate(atk, "stopped")) if atk else "—"
-            # The false-positive column carries a CI: it is the number a reader is most
-            # likely to over-read, and the one whose sample size varies most by family.
+            det_i = rate_ci(atk, "detected") if atk else None
+            prev_i = rate_ci(atk, "stopped") if atk else None
             fp_i = rate_ci(ben, "stopped") if ben else None
+            det = det_i.pct() if det_i else "—"
+            prev = prev_i.pct() if prev_i else "—"
             fp = fp_i.pct() if fp_i else "—"
-            print(f"  {str(g):<20} detect={det:<5} prevent={prev:<5} "
+            print(f"  {str(g):<20} detect={det:<16} prevent={prev:<16} "
                   f"fp={fp:<16} (n={len(rs)})")
 
     breakdown("BY LEAK STYLE  (paraphrase carries no identifier — see the corpus note)",
@@ -255,9 +264,10 @@ def report(records: list[dict]) -> None:
             rs = by.get(level, [])
             if not rs:
                 continue
-            det = _pct(_rate(rs, "detected"))
-            prev = _pct(_rate(rs, "stopped"))
-            print(f"  {level:<8} detect={det:<5} prevent={prev:<5} (n={len(rs)})")
+            det_i = rate_ci(rs, "detected")
+            prev_i = rate_ci(rs, "stopped")
+            print(f"  {level:<8} detect={det_i.pct():<16} prevent={prev_i.pct():<16} "
+                  f"(n={len(rs)})")
 
     # THE OBFUSCATION LADDER (task M2). This is the curve, and it is the figure worth
     # printing: the family average above is a function of which rungs we chose to
