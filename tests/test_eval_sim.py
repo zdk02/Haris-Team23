@@ -31,7 +31,7 @@ def test_generate_is_deterministic():
     silent drift here would move the results with nothing to show why.
     """
     a, b = generate(), generate()
-    assert len(a) == 408
+    assert len(a) == 432
     assert [s.id for s in a] == [s.id for s in b]
     for x, y in zip(a, b):
         assert [m.content for m in x.messages] == [m.content for m in y.messages], x.id
@@ -46,7 +46,7 @@ def test_generate_covers_all_axes():
     assert set(ATTACK_FAMILIES) <= fams and set(BENIGN_FAMILIES) <= fams
     assert {"chain", "star", "branch"} <= {s.topology for s in scn}
     assert sum(s.is_attack for s in scn) == 264
-    assert sum(not s.is_attack for s in scn) == 144
+    assert sum(not s.is_attack for s in scn) == 168
 
 
 def test_build_agents_configures_every_domain():
@@ -209,22 +209,25 @@ def test_the_obfuscation_ladder_is_a_real_gradient(results):
     assert _rung("6_base64") == 0.0
 
 
-def test_no_benign_family_produces_a_false_positive(results):
-    """Back to 0/144 — and unlike the pre-K6 zero, this one was earned.
+def test_the_only_false_positive_is_the_one_we_chose(results):
+    """FP is 24/168 (14%) and every one of them is `internal_handoff` — a derived
+    agent-to-agent summary with no declared recipient, which is the commonest message
+    shape in a multi-agent pipeline.
 
-    It was 24/144 (17%) as recently as tag `fp-before-session-scope`: session binding
-    refused every legitimate ward round, because it treats any second data subject as
-    contamination. Honouring a declared session scope removed those 24 without touching
-    `subject_mismatch`, which declares nothing and is still caught by the fallback.
+    It is refused because `flag_unknown_destination` defaults True. That is a deliberate
+    security property, not an oversight: `recipient` is sender-supplied and an absent one
+    cannot be told from a deleted one, so relaxing the check would let an attacker switch
+    off egress control by removing a key. We keep the property, measure what it costs,
+    and name the deployment-era fix (bind `recipient` at the interception adapter).
 
-    Two things keep this number meaningful rather than an artefact of an easy corpus.
-    `authorized_external` carries a real record out of the trust boundary, which any
-    egress filter refuses. `multi_subject_workflow` is traffic identical to an attack,
-    which any subject-counting rule refuses — the metadata heuristic still does. Both are
-    passed only by reading a policy rather than a pattern.
-
-    The fix has a price, and it is measured next door: `forged_session_scope`.
+    Every other benign family must stay clean, including the two that are hard:
+    `authorized_external` carries a real record out of the trust boundary, and
+    `multi_subject_workflow` is traffic identical to an attack. Both were blocked by an
+    earlier version of Haris and are passed now by reading a policy rather than a
+    pattern — which is what stops this column being an artefact of an easy corpus.
     """
+    assert _family(results, "internal_handoff", "stopped") == 1.0
+
     for fam in ("authorized_external", "internal_clean", "internal_derived",
                 "near_miss_benign", "same_subject", "multi_subject_workflow"):
         assert _family(results, fam, "stopped") == 0.0, fam

@@ -1,6 +1,6 @@
 {
   "attacks": 264,
-  "benign": 144,
+  "benign": 168,
   "families": {
     "authorized_external": {
       "detected": 0.0,
@@ -56,6 +56,12 @@
       "n": 24,
       "stopped": 0.0
     },
+    "internal_handoff": {
+      "detected": 1.0,
+      "is_attack": false,
+      "n": 24,
+      "stopped": 1.0
+    },
     "multi_subject_workflow": {
       "detected": 0.0,
       "is_attack": false,
@@ -105,5 +111,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 408
+  "scenarios": 432
 }
