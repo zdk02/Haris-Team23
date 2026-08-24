@@ -181,14 +181,25 @@ def report(records: list[dict]) -> None:
 
     print(f"scenarios: {len(records)}  (attacks {len(attacks)} · benign {len(benign)})\n")
     print("CORPUS  (measured by outcome, not by any detector's verdict)")
+    # Since the subject and scope rules, a leak no longer has to EGRESS: handing one
+    # patient's record to a workflow bound to another, or to a partner whose agreement
+    # does not cover them, leaks without anything leaving the building. So the corpus
+    # splits three ways rather than nested ones - an earlier version subtracted these
+    # two counts and printed a negative.
+    egress_leaks = [r for r in egress if r["leak_unmediated"]]
+    inside_leaks = [r for r in real if not r["egresses"]]
     print(f"  attack scenarios              : {len(attacks)}")
     print(f"  ...addressed outside at all   : {len(egress)}  "
-          f"({len(attacks)-len(egress)} are policy violations with no egress path)")
-    print(f"  ...that DO leak unmediated    : {len(real)}  "
-          f"({len(egress)-len(real)} egress but carry no identifier to leak)")
+          f"({len(attacks)-len(egress)} have no egress path)")
+    print(f"  ......of those, DO leak       : {len(egress_leaks)}  "
+          f"({len(egress)-len(egress_leaks)} egress but carry no identifier to leak)")
+    print(f"  ...leak WITHOUT egressing     : {len(inside_leaks)}  "
+          f"(wrong data subject, or outside a partner's agreement)")
+    print(f"  ...that DO leak unmediated    : {len(real)}  = the denominator below")
     print( "  A secret 'leaks' when content reaching an unauthorised recipient still")
-    print( "  carries an injected identifier, or when one subject's record surfaces in a")
-    print( "  message declared about another. Same rule scores every arm.\n")
+    print( "  carries an injected identifier, when one subject's record surfaces in a")
+    print( "  message declared about another, or when it reaches a partner whose")
+    print( "  agreement does not cover that subject. Same rule scores every arm.\n")
     print("HEADLINE")
     print(f"  leak prevention: {len(real)-still}/{len(real)} of the scenarios that actually "
           f"leak -> {_pct((len(real)-still)/len(real)) if real else '—'}")

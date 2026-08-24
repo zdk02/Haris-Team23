@@ -26,7 +26,8 @@ nothing about this generator: see `demo_app/eval/external_check.py`, which runs
 `detect-secrets` over the egress traffic and reports the subset it confirms.
 
 It verifies from the traffic wherever it can (a real signal, just not an independent one):
-  * cross-subject contamination  -> two distinct data_subjects in one session
+  * cross-subject contamination  -> two distinct data_subjects in one session, with no
+                                    declared session scope covering them
   * forged sender               -> a message whose token is missing/wrong vs the known
                                     per-domain registry (a ground-truth fact, not a Haris call)
   * subject forgery             -> a record whose own asserted subject contradicts the
@@ -59,6 +60,23 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def _scope_declared(scn: Scenario, subjects: set) -> bool:
+    """Did the calling application declare a session covering ALL these subjects?
+
+    This is the only thing separating a ward round from cross-subject contamination: the
+    traffic is identical, so the ground truth has to rest on a declaration made outside
+    it. Haris does not read `session_scope` — which is precisely why the legitimate case
+    is blocked, and why that block is reported as a false positive rather than treated as
+    correct behaviour.
+    """
+    declared: set = set()
+    for m in scn.messages:
+        raw = (m.metadata or {}).get("session_scope")
+        if raw:
+            declared |= {x.strip() for x in str(raw).split(",") if x.strip()}
+    return bool(declared) and {str(s) for s in subjects} <= declared
+
+
 def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
     """Return (should_stop, method): the label re-derived from the generated traffic.
 
@@ -75,7 +93,7 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
         for m in scn.messages
         if m.metadata.get("data_type") == domain.source_type and m.metadata.get("data_subject")
     }
-    if len(subjects) >= 2:
+    if len(subjects) >= 2 and not _scope_declared(scn, subjects):
         return True, "traffic:cross-subject"
 
     # 2. forged sender: a registered sender's token missing or wrong (ground-truth registry)
