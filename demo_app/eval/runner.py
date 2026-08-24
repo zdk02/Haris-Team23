@@ -44,6 +44,7 @@ from haris.state.graph_store import GraphStateStore
 from demo_app.eval.domains import DOMAINS, build_agents
 from demo_app.eval.generate import Scenario, generate
 from demo_app.eval.leak_check import egresses, leaked
+from demo_app.eval.stats import rate_ci
 from demo_app.eval.oracle import label_consistency_check
 
 STOPPED = {"block", "redact"}
@@ -200,13 +201,17 @@ def report(records: list[dict]) -> None:
     print( "  carries an injected identifier, when one subject's record surfaces in a")
     print( "  message declared about another, or when it reaches a partner whose")
     print( "  agreement does not cover that subject. Same rule scores every arm.\n")
-    print("HEADLINE")
+    print("HEADLINE  (95% bootstrap CI in brackets — task M4; a rate without one hides")
+    print( "           whether it rests on 168 observations or on four)")
+    prevented_ci = rate_ci([{"ok": not r["leak_haris"]} for r in real], "ok")
     print(f"  leak prevention: {len(real)-still}/{len(real)} of the scenarios that actually "
-          f"leak -> {_pct((len(real)-still)/len(real)) if real else '—'}")
+          f"leak -> {prevented_ci.pct() if prevented_ci else '—'}")
     print(f"  (verdict-based : {prevented}/{len(attacks)} stopped  -> "
           f"{_pct(prevented/len(attacks))}  — counts non-leaking scenarios in the denominator)")
-    print(f"  detection     : {_pct(_rate(attacks, 'detected'))}  (monitor arm)")
-    print(f"  false positive: {_pct(_rate(benign, 'stopped'))}  "
+    det_ci = rate_ci(attacks, "detected")
+    fp_ci = rate_ci(benign, "stopped")
+    print(f"  detection     : {det_ci.pct() if det_ci else '—'}  (monitor arm)")
+    print(f"  false positive: {fp_ci.pct() if fp_ci else '—'}  "
           f"({sum(1 for r in benign if r['stopped'])}/{len(benign)} benign wrongly stopped)")
     print(f"  utility       : {_pct(1 - _rate(benign, 'stopped'))}  (benign traffic delivered unharmed)")
     if all_lat:
@@ -224,8 +229,12 @@ def report(records: list[dict]) -> None:
             ben = [r for r in rs if not r["label_attack"]]
             det = _pct(_rate(atk, "detected")) if atk else "—"
             prev = _pct(_rate(atk, "stopped")) if atk else "—"
-            fp = _pct(_rate(ben, "stopped")) if ben else "—"
-            print(f"  {str(g):<20} detect={det:<5} prevent={prev:<5} fp={fp:<5} (n={len(rs)})")
+            # The false-positive column carries a CI: it is the number a reader is most
+            # likely to over-read, and the one whose sample size varies most by family.
+            fp_i = rate_ci(ben, "stopped") if ben else None
+            fp = fp_i.pct() if fp_i else "—"
+            print(f"  {str(g):<20} detect={det:<5} prevent={prev:<5} "
+                  f"fp={fp:<16} (n={len(rs)})")
 
     breakdown("BY LEAK STYLE  (paraphrase carries no identifier — see the corpus note)",
               "leak_style", records)
@@ -258,14 +267,20 @@ def report(records: list[dict]) -> None:
         by = defaultdict(list)
         for r in rungs:
             by[r["rung"]].append(r)
+        wide = 0
         for rung in sorted(by):
             rs = by[rung]
-            prev = _rate(rs, "stopped")
+            ci = rate_ci(rs, "stopped")
             leaks = sum(1 for r in rs if r["leak_haris"])
-            bar = "#" * int(round(prev * 10)) or "."
-            print(f"  {rung:<18} prevent={_pct(prev):<5} leaked={leaks:<3} "
-                  f"(n={len(rs)}) {bar}")
-        print("  n per rung is small; attach a bootstrap CI before quoting a rate (task M4).")
+            bar = "#" * int(round(ci.rate * 10)) or "."
+            flag = "" if ci.is_informative else "  (!)"
+            wide += 0 if ci.is_informative else 1
+            print(f"  {rung:<18} prevent={ci.pct():<16} leaked={leaks:<3} "
+                  f"(n={ci.n}) {bar}{flag}")
+        if wide:
+            print(f"  (!) {wide} of {len(by)} rungs have an interval too wide to quote as a")
+            print( "      rate. Report the SHAPE of this curve — layout changes recovered,")
+            print( "      encodings not — and treat the percentages as indicative only.")
 
     breakdown("BY FAMILY", "family", records)
 
