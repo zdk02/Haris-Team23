@@ -1,5 +1,5 @@
 {
-  "attacks": 192,
+  "attacks": 216,
   "benign": 120,
   "families": {
     "authorized_external": {
@@ -74,6 +74,12 @@
       "n": 24,
       "stopped": 1.0
     },
+    "subject_forgery": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
+    },
     "subject_mismatch": {
       "detected": 1.0,
       "is_attack": true,
@@ -81,5 +87,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 312
+  "scenarios": 336
 }

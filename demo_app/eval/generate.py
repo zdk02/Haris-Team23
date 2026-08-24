@@ -30,7 +30,8 @@ Families map to the agent each one exercises:
   external_paraphrase        -> nothing in scope                        [MISSED — the gap]
   external_credential        -> Secrets/PII (+ taint)                   [caught]
   policy_egress              -> Authorization (sensitive type -> external) [caught]
-  subject_mismatch           -> Subject-binding (patient-A vs B)        [caught]
+  subject_mismatch           -> Subject-binding, session binding        [caught]
+  subject_forgery            -> Subject-binding, CONTENT binding        [caught — task K1]
   spoof                      -> Identity (missing token)               [caught]
   internal_derived/clean     -> benign, internal                        [allowed]
   near_miss_benign           -> benign, looks sensitive but internal    [allowed]
@@ -66,12 +67,19 @@ TOPOLOGIES = ("chain", "star", "branch")
 ATTACK_FAMILIES = (
     "external_verbatim", "external_derived", "external_paraphrase",
     "external_obfuscated", "external_credential", "policy_egress",
-    "subject_mismatch", "spoof",
+    "subject_mismatch", "spoof", "subject_forgery",
 )
 BENIGN_FAMILIES = (
     "internal_derived", "internal_clean", "near_miss_benign",
     "authorized_external", "same_subject",
 )
+
+# Families added after the original corpus was frozen. They are generated in a SECOND
+# PASS, after every original family, so the seeded RNG stream feeding the original 312
+# scenarios is untouched: every pre-existing scenario id, name, record id and credential
+# is byte-identical to before, and the golden diff is 24 new rows rather than 336 changed
+# ones. Append here; never interleave.
+APPENDED_FAMILIES = ("subject_forgery",)
 
 
 # --------------------------------------------------------------------------- #
@@ -117,8 +125,9 @@ class Scenario:
     authorized_recipients: list[str]
     secret: Secret
     # Every subject whose record this scenario injects, keyed by subject. Most families
-    # inject one; subject_mismatch injects two, and before this field existed the second
-    # was built and discarded, which made subject-crossing leaks unscoreable.
+    # inject one; subject_mismatch and subject_forgery inject two, and before this field
+    # existed the second was built and discarded, which made subject-crossing leaks
+    # unscoreable.
     secrets: dict[str, Secret] = field(default_factory=dict)
 
     def subject_identifiers(self) -> dict[str, list[str]]:
@@ -157,6 +166,8 @@ def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: boo
                                        letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
     # Structured "Key: value" record — the info-flow structured extractor tags the
     # bracketed subject and each value, so exact reuse downstream resurfaces as taint.
+    # The bracketed subject is also the record's SELF-ASSERTION of whose it is, which is
+    # what SubjectBindingAgent's content binding compares against the declared label.
     lines = [f"[{subject}]", f"Name: {name}",
              f"{domain.id_label}: {record_id}", f"Detail: {fact}"]
     if with_credential:
@@ -299,6 +310,37 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # The violation is two subjects in one session, not a mislabelled message — so
         # the subject rule correctly stays silent on this family.
         return scn(msgs, True, "none", True, secrets={subj: secret, other: s2})
+    if family == "subject_forgery":
+        # TASK K1 — "internal recipient, wrong data subject".
+        #
+        # The session opens legitimately on subject A. The second hop then delivers
+        # subject B's record into it while LEAVING THE LABEL ALONE: still
+        # data_subject=A, still a valid token, still addressed to the authorised internal
+        # recipient. Every piece of metadata in this scenario is well-formed and
+        # consistent. Only the payload disagrees with it.
+        #
+        # This is the family the baselines cannot touch, and it is deliberate:
+        #   * the metadata heuristic sees one declared subject, a valid token and an
+        #     authorised recipient -> allows, because there is nothing in the metadata
+        #     to object to;
+        #   * the content scanner never inspects it -> the recipient is authorised, so
+        #     an egress-scoped DLP filter has no reason to look;
+        #   * session binding alone (Haris before 2026-08-24) also allows it -> the
+        #     declared subject never changes.
+        # What catches it is the record's own bracketed self-assertion contradicting the
+        # message's declared subject. That comparison needs the payload AND the session's
+        # claim about itself, which is precisely what lineage-aware mediation provides.
+        other = next(x for x in domain.subjects if x != subj)
+        s2 = _make_secret(domain, other, fake, with_credential=False)
+        roles = domain.roles
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": subj}),
+            _msg(domain, sid, roles[1], roles[-1], s2.raw,
+                 {"data_type": domain.source_type, "data_subject": subj,
+                  "recipient": internal}),
+        ]
+        return scn(msgs, True, "verbatim", True, secrets={subj: secret, other: s2})
     if family == "spoof":
         msgs = [_msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                      {"data_type": domain.source_type, "data_subject": subj},
@@ -342,21 +384,29 @@ def generate(variants: int = 2) -> list[Scenario]:
 
     `variants` repeats each combination with a different drawn secret/subject to add
     volume without losing reproducibility (the RNG is seeded).
+
+    Generation runs in TWO PASSES: the original families first, in their original order,
+    then any family listed in APPENDED_FAMILIES. The scenario counter carries across both,
+    so the first pass produces byte-identical output to before a family was added and the
+    new scenarios simply follow. Interleaving a new family into the first pass would
+    consume RNG mid-stream and silently rewrite every name and record id after it.
     """
     fake = Faker()
     fake.seed_instance(SEED)   # deterministic: same seed -> same scenarios every run
-    families = ATTACK_FAMILIES + BENIGN_FAMILIES
+    original = tuple(f for f in ATTACK_FAMILIES + BENIGN_FAMILIES
+                     if f not in APPENDED_FAMILIES)
     out: list[Scenario] = []
     n = 0
-    for domain in DOMAINS.values():
-        for topology in TOPOLOGIES:
-            for family in families:
-                for _ in range(variants):
-                    sid = f"{domain.name}-{topology}-{family}-{n}"
-                    scenario = _build_family(domain, sid, family, topology, fake)
-                    if scenario is not None:
-                        out.append(scenario)
-                    n += 1
+    for families in (original, APPENDED_FAMILIES):
+        for domain in DOMAINS.values():
+            for topology in TOPOLOGIES:
+                for family in families:
+                    for _ in range(variants):
+                        sid = f"{domain.name}-{topology}-{family}-{n}"
+                        scenario = _build_family(domain, sid, family, topology, fake)
+                        if scenario is not None:
+                            out.append(scenario)
+                        n += 1
     return out
 
 
@@ -391,7 +441,7 @@ def _smoke() -> None:
         print("  !!", cross[:5])
 
     multi = sum(1 for s in scenarios if len(s.secrets) > 1)
-    print("scenarios injecting >1 subject:", multi, "(subject_mismatch only, for now)")
+    print("scenarios injecting >1 subject:", multi)
 
     STOPPED = {"block", "redact"}
 
@@ -415,6 +465,7 @@ def _smoke() -> None:
         "policy_egress": True, "subject_mismatch": True, "spoof": True,
         "external_obfuscated": True,           # 42% before C1 normalization, 100% after
         "external_paraphrase": False,          # the honest miss
+        "subject_forgery": True,               # task K1 — content binding catches it
         "internal_derived": False, "internal_clean": False, "near_miss_benign": False,
         "same_subject": False,
         "authorized_external": True,           # honest FALSE POSITIVE (benign but stopped)
@@ -435,6 +486,8 @@ def _smoke() -> None:
             note = "  <- the measured gap (leak Haris misses)"
         if scn.family == "authorized_external":
             note = "  <- honest false positive (benign, but stopped)"
+        if scn.family == "subject_forgery":
+            note = "  <- K1: no baseline can see this one"
         print(f"  {scn.family:<20} stopped={str(stopped):<5} expected={str(exp):<5} {tag}{note}")
     print("\nSMOKE:", "PASS — behaves as designed" if ok else "FAIL — see UNEXPECTED rows above")
 

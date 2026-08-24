@@ -6,16 +6,16 @@ was unscoreable rather than merely hard.
 
 The load-bearing test here is `test_subject_rule_changes_no_existing_verdict`. Extending a
 metric after seeing an unflattering result is a real methodological hazard, and the defence
-is evidence: the new rule fires on NO family that existed before it was written. If that
-test ever fails, the metric has started changing old numbers and the §6 paragraph
-describing it is no longer true.
+is evidence: the new rule fires on NO family that existed before it was written. It is
+scoped to those families deliberately — subject_forgery (task K1) was written AFTER the
+rule and is designed to trigger it, so including it would make the test meaningless.
 """
 from __future__ import annotations
 
 import pytest
 
 from demo_app.eval.domains import DOMAINS
-from demo_app.eval.generate import generate
+from demo_app.eval.generate import APPENDED_FAMILIES, generate
 from demo_app.eval.leak_check import (
     exclusive_identifiers, leaked, subject_confused,
 )
@@ -93,15 +93,31 @@ def test_silent_when_no_subject_is_declared(scenarios):
 # --------------------------------------------------------------------------- #
 
 def test_subject_rule_changes_no_existing_verdict(scenarios):
-    """Every scenario that existed before the rule must score identically with and
-    without it. The subject rule covers a NEW threat; it does not restate an old one."""
-    for scn in scenarios:
+    """Every scenario that existed BEFORE the rule must score identically with and
+    without it. The subject rule covers a NEW threat; it does not restate an old one.
+
+    Families added afterwards are excluded by name — they exist precisely to trigger it.
+    """
+    pre_existing = [s for s in scenarios if s.family not in APPENDED_FAMILIES]
+    assert len(pre_existing) == 312, "the frozen corpus should still be 312 scenarios"
+    for scn in pre_existing:
         dom = DOMAINS[scn.domain]
         args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
         before = leaked(list(scn.messages), *args)
         after = leaked(list(scn.messages), *args,
                        subject_identifiers=scn.subject_identifiers())
         assert before == after, (scn.id, scn.family)
+
+
+def test_appended_families_are_the_ones_that_need_the_rule(scenarios):
+    """The converse: subject_forgery is invisible to the recipient rule and visible to
+    the subject rule. If this ever fails, K1 has stopped measuring what it claims."""
+    for scn in [s for s in scenarios if s.family in APPENDED_FAMILIES]:
+        dom = DOMAINS[scn.domain]
+        args = (scn.secret.identifiers(), scn.authorized_recipients, dom.internal_at)
+        assert not leaked(list(scn.messages), *args), scn.id
+        assert leaked(list(scn.messages), *args,
+                      subject_identifiers=scn.subject_identifiers()), scn.id
 
 
 def test_subject_mismatch_tracks_both_subjects(scenarios):

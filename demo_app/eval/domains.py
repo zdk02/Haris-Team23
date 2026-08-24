@@ -82,7 +82,11 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
         default_allow=domain.default_allow,
     ))
 
-    agents.append(SubjectBindingAgent())  # domain-agnostic: binds session to first subject
+    # Session binding is domain-agnostic (first data_subject in lineage). `known_subjects`
+    # additionally enables CONTENT binding: a record whose own bracketed self-assertion
+    # contradicts the message's declared data_subject is blocked wherever it is addressed.
+    # Without this argument that check is disabled, which is why it is passed here.
+    agents.append(SubjectBindingAgent(known_subjects=domain.subjects))
 
     infoflow_kwargs = dict(
         source_data_type=domain.source_type,

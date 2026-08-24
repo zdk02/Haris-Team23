@@ -31,7 +31,7 @@ def test_generate_is_deterministic():
     silent drift here would move the results with nothing to show why.
     """
     a, b = generate(), generate()
-    assert len(a) == 312
+    assert len(a) == 336
     assert [s.id for s in a] == [s.id for s in b]
     for x, y in zip(a, b):
         assert [m.content for m in x.messages] == [m.content for m in y.messages], x.id
@@ -45,7 +45,7 @@ def test_generate_covers_all_axes():
     fams = {s.family for s in scn}
     assert set(ATTACK_FAMILIES) <= fams and set(BENIGN_FAMILIES) <= fams
     assert {"chain", "star", "branch"} <= {s.topology for s in scn}
-    assert sum(s.is_attack for s in scn) == 192
+    assert sum(s.is_attack for s in scn) == 216
     assert sum(not s.is_attack for s in scn) == 120
 
 

@@ -129,4 +129,4 @@ def test_every_arm_is_scored_on_every_scenario(scenarios):
 
 def test_run_all_covers_the_corpus():
     rows = run_all()
-    assert len(rows) == 312
+    assert len(rows) == 336
