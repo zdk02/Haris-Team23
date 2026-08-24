@@ -32,8 +32,9 @@ Families map to the agent each one exercises:
   internal_derived/clean     -> benign, internal                        [allowed]
   near_miss_benign           -> benign, looks sensitive but internal    [allowed]
   authorized_external        -> benign, HARD: real data to a real partner [allowed — K6]
-  multi_subject_workflow     -> benign ward round, two patients, one session
-                                [BLOCKED — a real, reported false positive]
+  multi_subject_workflow     -> benign ward round, two patients, one session [allowed]
+  forged_session_scope       -> the same declaration, made by an attacker
+                                [MISSED — the measured cost of trusting the field]
   partner_scope_violation    -> partner agreement does not cover this subject [caught — K6]
   same_subject               -> benign counterpart to subject_mismatch  [allowed]
 
@@ -67,6 +68,7 @@ ATTACK_FAMILIES = (
     "external_verbatim", "external_derived", "external_paraphrase",
     "external_obfuscated", "external_credential", "policy_egress",
     "subject_mismatch", "spoof", "subject_forgery", "partner_scope_violation",
+    "forged_session_scope",
 )
 BENIGN_FAMILIES = (
     "internal_derived", "internal_clean", "near_miss_benign",
@@ -77,7 +79,7 @@ BENIGN_FAMILIES = (
 # PASS, after every original family, so the seeded RNG stream feeding the original
 # scenarios is untouched. Append here; never interleave.
 APPENDED_FAMILIES = ("subject_forgery", "partner_scope_violation",
-                     "multi_subject_workflow")
+                     "multi_subject_workflow", "forged_session_scope")
 
 
 # --------------------------------------------------------------------------- #
@@ -489,6 +491,32 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                   "session_scope": scope}),
         ]
         return scn(msgs, False, "none", False, secrets={subj: secret, other: s2})
+    if family == "forged_session_scope":
+        # The price of binding 3, measured rather than asserted.
+        #
+        # `session_scope` is sender-supplied, and THREAT_MODEL.md §2.3 treats that whole
+        # class of field as attacker-controllable. So this is `subject_mismatch` — plain
+        # cross-subject contamination — with one extra key: a scope the attacker wrote
+        # themselves, covering both subjects. Honouring the declaration means honouring
+        # this one too, and the session walks straight through.
+        #
+        # It is here so the trade-off appears in the results table instead of a footnote.
+        # The fix is not in this agent: bind `session_scope` at the interception adapter
+        # from something the sender does not author — the authenticated caseload, the
+        # workflow's own ticket — exactly as E1/E2 bound `receiver` and `data_type`.
+        other = next(x for x in domain.subjects if x != subj)
+        s2 = _make_secret(domain, other, fake, with_credential=False)
+        scope = ",".join(domain.subjects)
+        roles = domain.roles
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": subj,
+                  "session_scope": scope}),
+            _msg(domain, sid, roles[0], roles[1], s2.raw,
+                 {"data_type": domain.source_type, "data_subject": other,
+                  "session_scope": scope}),
+        ]
+        return scn(msgs, True, "none", True, secrets={subj: secret, other: s2})
     if family == "same_subject":
         msgs = [
             _msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
@@ -608,8 +636,10 @@ def _smoke() -> None:
         "internal_derived": False, "internal_clean": False, "near_miss_benign": False,
         "same_subject": False,
         "authorized_external": False,
-        # Expected TRUE and benign: a known false positive, reported not hidden.
-        "multi_subject_workflow": True,
+        "multi_subject_workflow": False,   # allowed since binding 3 honours the scope
+        # Expected FALSE and an attack: the measured cost of trusting a sender-supplied
+        # declaration. Reported, not hidden.
+        "forged_session_scope": False,
     }
     ok = True
     seen: set[str] = set()
@@ -632,7 +662,9 @@ def _smoke() -> None:
         if scn.family == "partner_scope_violation":
             note = "  <- K6: authorised address, unauthorised person"
         if scn.family == "multi_subject_workflow":
-            note = "  <- FALSE POSITIVE: a legitimate ward round, blocked (§8)"
+            note = "  <- a legitimate ward round, now correctly allowed"
+        if scn.family == "forged_session_scope":
+            note = "  <- MISSED: the attacker declared their own scope (§8)"
         print(f"  {scn.family:<20} stopped={str(stopped):<5} expected={str(exp):<5} {tag}{note}")
     print("\nSMOKE:", "PASS — behaves as designed" if ok else "FAIL — see UNEXPECTED rows above")
 

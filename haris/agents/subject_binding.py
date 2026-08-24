@@ -10,7 +10,7 @@ record must not enter it, even though the same agents and the same data_type are
 Per-agent guardrails cannot express this: the block depends on whose data this is versus
 whose case the session is, which only the session context knows.
 
-TWO BINDINGS, AND WHY THE SECOND ONE MATTERS.
+THREE BINDINGS.
 
   1. SESSION BINDING (original). A session is bound to the FIRST data_subject that appears
      in its lineage. A later message DECLARING a different data_subject is cross-subject
@@ -20,6 +20,10 @@ TWO BINDINGS, AND WHY THE SECOND ONE MATTERS.
      bracketed marker a structured record carries in its header. When that assertion
      disagrees with the message's declared `data_subject`, the message is BLOCKED,
      regardless of where it is addressed.
+
+  3. DECLARED SCOPE (added 2026-08-24, after measuring what binding 1 costs). When the
+     calling application states up front which subjects a session legitimately covers,
+     binding 1 uses that set instead of "whichever subject arrived first".
 
 Binding 1 alone is defeated by an attacker who simply does not update the label. Deliver
 patient B's record into patient A's session while leaving `data_subject: patient-A` in
@@ -32,6 +36,31 @@ This is the property no metadata heuristic can reproduce, because a metadata heu
 definition never opens the payload; and no per-message content scanner can reproduce it
 either, because the message is addressed internally and carries nothing a DLP rule
 recognises as a secret. It is the concrete answer to "what does lineage buy you?"
+
+WHY BINDING 3 EXISTS, AND WHAT IT COST TO FIND.
+Binding 1 treats every second data subject as contamination. That is right for an attack
+and wrong for a ward round: a clinician reviewing two patients, an advisor comparing two
+accounts, a recruiter screening two candidates are all ordinary work, and their traffic is
+INDISTINGUISHABLE from the attack — two source reads, two subjects, one session, nothing
+egressing. Measured on a corpus built to contain both (`multi_subject_workflow` against
+`subject_mismatch`), binding 1 alone refused 24 of 24 legitimate sessions: a 17% false
+positive rate, the whole of it this one case.
+
+Nothing in the message stream separates the two, so the separation has to come from
+outside it. `session_scope` is the calling application saying, before any record is read,
+which subjects this piece of work is about. With it, a session covering A and B accepts
+both and still refuses C. Without it, the agent falls back to first-subject binding
+exactly as before, so an attack that declares nothing is caught exactly as it was.
+
+THE HONEST LIMIT OF BINDING 3. `session_scope` is sender-supplied metadata, and
+THREAT_MODEL.md §2.3 already treats that whole class as attacker-controllable: a
+compromised agent can forge a scope covering both subjects and walk the contamination
+attack straight through. That is not a hole this agent can close on its own — the same
+argument applies to `recipient` and `data_type`, and the same fix applies too: bind the
+field at the interception adapter from something the sender does not author (the
+authenticated caseload, the workflow's ticket), as E1/E2 did for `receiver`. The corpus
+measures the forged case rather than asserting it (`forged_session_scope`), so the cost of
+this convenience is a number in the results and not a footnote.
 
 SCOPE, HONESTLY. Content binding is only as good as the record's self-assertion. It works
 on structured records that name their subject; a free-prose note that never says whose it
@@ -67,7 +96,8 @@ class SubjectBindingAgent(SecurityAgent):
 
     def __init__(self, subject_key: str = "data_subject", *,
                  known_subjects: Iterable[str] = (),
-                 subject_marker: str = _SUBJECT_MARKER) -> None:
+                 subject_marker: str = _SUBJECT_MARKER,
+                 scope_key: str = "session_scope") -> None:
         """
         known_subjects: the data subjects this deployment knows about. A bracketed marker
             in message content is treated as a subject claim ONLY if it is one of these,
@@ -76,10 +106,14 @@ class SubjectBindingAgent(SecurityAgent):
             behaves exactly as it did before 2026-08-24.
         subject_marker: regex with one capture group locating a record's self-asserted
             subject. Defaults to the bracketed-header convention.
+        scope_key: metadata field in which the calling application declares which data
+            subjects this session legitimately covers, comma-separated. Absent, the agent
+            falls back to binding the session to its first subject.
         """
         self.subject_key = subject_key
         self.known_subjects = frozenset(str(s) for s in known_subjects)
         self._marker = re.compile(subject_marker)
+        self.scope_key = scope_key
 
     def check(self, message: Message, context: dict[str, Any]) -> Verdict:
         current = (message.metadata or {}).get(self.subject_key)
@@ -98,7 +132,24 @@ class SubjectBindingAgent(SecurityAgent):
                         f"declared as '{current}'; the payload contradicts its own label"),
             )
 
-        # BINDING 1 — the session's bound subject vs the message's declaration.
+        # BINDING 3 — a scope the application declared, if it declared one. Checked
+        # before binding 1 because it REPLACES it: where a session legitimately covers
+        # several subjects, "the first one seen" is not the right question to ask.
+        scope = self._declared_scope(message, context)
+        if scope is not None:
+            if str(current) in scope:
+                return self._pass(
+                    f"data_subject '{current}' is within the session's declared scope "
+                    f"({', '.join(sorted(scope))})")
+            return Verdict(
+                agent_name=self.name, label=Label.BLOCK, score=1.0,
+                reason=(f"out of session scope: data_subject '{current}' is not among "
+                        f"the {len(scope)} subject(s) this session declared"),
+            )
+
+        # BINDING 1 — the session's bound subject vs the message's declaration. The
+        # fallback when nothing was declared, and still what catches an attack that
+        # declares nothing.
         bound = self._session_subject(context)
         if bound is None or str(bound) == str(current):
             return self._pass(
@@ -120,6 +171,26 @@ class SubjectBindingAgent(SecurityAgent):
             return []
         asserted = {m.strip() for m in self._marker.findall(content or "")}
         return sorted((asserted & self.known_subjects) - {declared})
+
+    def _declared_scope(self, message: Message,
+                        context: dict[str, Any]) -> Optional[frozenset]:
+        """The subjects this session declared it covers, or None if it declared nothing.
+
+        Read from the CURRENT message and from the session's history, so a scope stated
+        on the opening hop still governs later ones. A session that declares a scope
+        partway through is honoured from that point — the alternative, ignoring it,
+        would make the field depend on hop ordering for no security benefit.
+
+        Empty and whitespace-only declarations are treated as no declaration at all: an
+        empty scope would otherwise refuse every subject including the session's own,
+        which is a failure mode nobody intends by leaving a field blank.
+        """
+        subjects: set[str] = set()
+        for m in [message, *context.get("history", [])]:
+            raw = (m.metadata or {}).get(self.scope_key)
+            if raw:
+                subjects |= {x.strip() for x in str(raw).split(",") if x.strip()}
+        return frozenset(subjects) if subjects else None
 
     def _session_subject(self, context: dict[str, Any]) -> Optional[str]:
         """The subject this session is bound to = the first data_subject seen in lineage.

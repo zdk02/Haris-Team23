@@ -95,6 +95,12 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
     }
     if len(subjects) >= 2 and not _scope_declared(scn, subjects):
         return True, "traffic:cross-subject"
+    if len(subjects) >= 2 and scn.family == "forged_session_scope":
+        # The declaration is present and covers both subjects, so the check above lets it
+        # pass — which is the point of the family. Ground truth here rests on
+        # construction, not on traffic: the traffic is IDENTICAL to a legitimate ward
+        # round, and no reading of it can tell them apart. That is the finding.
+        return True, "construction:forged-scope"
 
     # 2. forged sender: a registered sender's token missing or wrong (ground-truth registry)
     for m in scn.messages:

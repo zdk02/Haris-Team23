@@ -1,17 +1,21 @@
-"""The false positive we found by building the case, not by assuming it away.
+"""Declared session scope: the false positive we found, and the one we took to close it.
 
-`multi_subject_workflow` is a clinician on a ward round: two patients, one session, no
-egress, valid tokens, and an application that declared up front which patients the session
-covers. Entirely legitimate.
+THE FINDING (measured, tag `fp-before-session-scope`). `multi_subject_workflow` is a
+clinician on a ward round: two patients, one session, no egress, valid tokens, and an
+application declaring up front which patients the session covers. Entirely legitimate —
+and session binding refused all 24 of them, a 17% false-positive rate, because it treats
+every second data subject as contamination. It cannot tell a ward round from an attack:
+THE TRAFFIC IS IDENTICAL, and the difference lives outside it.
 
-Haris blocks it. Session binding refuses any second data subject, and it cannot tell a
-ward round from cross-subject contamination because THE TRAFFIC IS IDENTICAL — the only
-difference lives in a `session_scope` declaration Haris does not read.
+THE FIX. Binding 3 honours the declaration. A session covering A and B accepts both and
+still refuses C; a session that declares nothing falls back to first-subject binding, so
+`subject_mismatch` is caught exactly as before.
 
-These tests pin the finding so it cannot quietly disappear: the family is labelled benign,
-Haris blocks it, and the mechanism doing the blocking is the same one that earns the 100%
-on `subject_mismatch`. Reporting it costs 17 points of false-positive rate and buys a
-limitation section that is true.
+THE COST, MEASURED NOT ASSERTED. `session_scope` is sender-supplied, which
+THREAT_MODEL.md §2.3 already calls attacker-controllable. `forged_session_scope` is the
+contamination attack with a scope the attacker wrote themselves, and it walks through.
+Both numbers belong in §6: the fix removed 24 false positives and admitted 24 misses,
+and the real remedy is binding the field at the adapter, not in this agent.
 """
 from __future__ import annotations
 
@@ -61,10 +65,59 @@ def test_it_never_egresses(ward_rounds):
             assert not m.metadata.get("recipient"), scn.id
 
 
-def test_haris_wrongly_blocks_it(ward_rounds):
-    """THE FINDING. Not a bug to fix before the deadline — a limitation to report."""
+def test_haris_now_allows_it(ward_rounds):
+    """The fix. Before binding 3 this was 24/24 blocked — a 17% false-positive rate."""
     for scn in ward_rounds:
-        assert haris(scn).stopped, f"{scn.id}: expected a false positive here"
+        assert not haris(scn).stopped, f"{scn.id}: legitimate ward round refused"
+
+
+def test_a_session_scope_does_not_admit_a_third_subject():
+    """Honouring a declaration must not become 'allow any subject'. A scope naming two
+    patients still refuses a third."""
+    from haris.agents.subject_binding import SubjectBindingAgent
+    from haris.schemas.message import Message
+    from haris.schemas.verdict import Label
+
+    agent = SubjectBindingAgent(known_subjects=("patient-A", "patient-B", "patient-C"))
+    md = {"data_subject": "patient-C", "session_scope": "patient-A,patient-B",
+          "auth_token": "t"}
+    m = Message(session_id="s", sender="a", receiver="b",
+                content="unremarkable note", metadata=md)
+    assert agent.check(m, {"history": []}).label is Label.BLOCK
+
+
+def test_an_empty_declaration_is_not_a_declaration():
+    """A blank field must not refuse every subject including the session's own — nobody
+    means that by leaving a value empty."""
+    from haris.agents.subject_binding import SubjectBindingAgent
+    from haris.schemas.message import Message
+    from haris.schemas.verdict import Label
+
+    agent = SubjectBindingAgent(known_subjects=("patient-A",))
+    m = Message(session_id="s", sender="a", receiver="b", content="note",
+                metadata={"data_subject": "patient-A", "session_scope": "  ",
+                          "auth_token": "t"})
+    assert agent.check(m, {"history": []}).label is Label.PASS
+
+
+def test_the_attack_without_a_declaration_is_still_caught(contamination):
+    """The fallback. subject_mismatch declares no scope, so binding 1 still applies and
+    the 100% on that family survives the fix."""
+    for scn in contamination:
+        assert haris(scn).stopped, scn.id
+
+
+def test_a_forged_declaration_walks_through(scenarios):
+    """THE COST, pinned. session_scope is sender-supplied metadata; an attacker who
+    writes their own scope defeats binding 3 completely. Measured here rather than
+    footnoted, because the fix belongs at the adapter and is not in this agent's power.
+    """
+    forged = [s for s in scenarios if s.family == "forged_session_scope"]
+    assert len(forged) == 24
+    for scn in forged:
+        assert scn.is_attack
+        assert not haris(scn).stopped, (
+            f"{scn.id}: if this starts passing, the trade-off changed — re-measure")
 
 
 def test_it_is_indistinguishable_from_the_attack_it_is_confused_with(
@@ -80,9 +133,11 @@ def test_it_is_indistinguishable_from_the_attack_it_is_confused_with(
     assert all("session_scope" not in m.metadata for m in b.messages)
 
 
-def test_the_metadata_heuristic_makes_the_same_mistake(ward_rounds):
-    """Worth reporting alongside: the cheap baseline shares this failure exactly, because
-    it also counts subjects and also ignores the declaration."""
+def test_the_metadata_heuristic_still_makes_the_mistake(ward_rounds):
+    """Worth reporting alongside: the cheap baseline shares the ORIGINAL failure, because
+    it counts subjects and ignores the declaration. Haris no longer does — so the ward
+    round is a benign family where Haris is right and the heuristic is wrong, the mirror
+    image of subject_forgery."""
     for scn in ward_rounds:
         assert metadata_heuristic(scn).stopped, scn.id
 

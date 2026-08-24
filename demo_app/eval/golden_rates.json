@@ -1,5 +1,5 @@
 {
-  "attacks": 240,
+  "attacks": 264,
   "benign": 144,
   "families": {
     "authorized_external": {
@@ -38,6 +38,12 @@
       "n": 24,
       "stopped": 1.0
     },
+    "forged_session_scope": {
+      "detected": 0.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 0.0
+    },
     "internal_clean": {
       "detected": 0.0,
       "is_attack": false,
@@ -51,10 +57,10 @@
       "stopped": 0.0
     },
     "multi_subject_workflow": {
-      "detected": 1.0,
+      "detected": 0.0,
       "is_attack": false,
       "n": 24,
-      "stopped": 1.0
+      "stopped": 0.0
     },
     "near_miss_benign": {
       "detected": 0.0,
@@ -99,5 +105,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 384
+  "scenarios": 408
 }
