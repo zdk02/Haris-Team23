@@ -366,9 +366,25 @@ class SecretsPIIAgent(SecurityAgent):
                                   md.get("data_subject"))
 
     def _is_internal(self, recipient: str) -> bool:
+        """Is this address AT the trust boundary?
+
+        Exact domain only. `nurse@ward3.hospital.internal` is NOT internal, and that is
+        deliberate: a subdomain is a delegation, and whoever runs `ward3` is a different
+        party from whoever runs `hospital.internal`. Treating delegated subdomains as
+        inside the boundary means a compromised departmental server inherits the parent
+        organisation's trust for free.
+
+        This also makes the three boundary checks agree. Until 2026-08-25 this agent
+        accepted subdomains (`endswith("." + d)`) while AuthorizationAgent and the metric
+        did not, so the same address was inside the boundary for one agent and outside it
+        for two — a disagreement no scenario in the corpus exercised, and exactly the kind
+        a reviewer finds by typing one address.
+
+        A deployment that genuinely wants a subdomain lists it: `internal_domains` takes
+        several, the same way `authorized_partners` takes several addresses.
+        """
         r = recipient.lower()
-        return any(r.endswith("@" + d) or r.endswith("." + d) or r == d
-                   for d in self.internal_domains)
+        return any(r.endswith("@" + d) or r == d for d in self.internal_domains)
 
     # -- helpers ------------------------------------------------------------ #
 

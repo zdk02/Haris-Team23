@@ -72,9 +72,40 @@ def test_missing_recipient_allowed_when_configured():
     assert v.label is Label.PASS
 
 
-def test_subdomain_of_internal_domain_is_internal():
+def test_subdomain_of_internal_domain_is_not_internal():
+    """REVERSED 2026-08-25. This previously asserted that a subdomain of the internal
+    domain was inside the trust boundary. It is not, and the reversal was deliberate.
+
+    Two reasons, in order of importance.
+
+    A subdomain is a DELEGATION. Whoever runs `clinic.hospital.internal` is a different
+    party from whoever runs `hospital.internal`, and treating the child as internal hands
+    a compromised departmental server the parent organisation's trust for free — for
+    tainted PHI, for sensitive data types, and for unredacted PII, all at once.
+
+    And the three boundary checks disagreed with each other. This agent accepted
+    subdomains via `endswith("." + d)` while `AuthorizationAgent` and
+    `leak_check.unauthorised` required the exact domain, so one address was inside the
+    boundary for one agent and outside it for two. No scenario in the corpus exercised
+    that disagreement; a reviewer typing one address would have.
+    `tests/test_boundary_lookalike.py` now pins that all three agree, on every address.
+
+    Strict is not a dead end — see the test below.
+    """
     msg = _derived(IDENTIFIED, "nurse@clinic.hospital.internal")
     v = AGENT.check(msg, _ctx(_phi_source(), msg))
+    assert v.label is Label.FLAG
+
+
+def test_a_listed_subdomain_is_internal():
+    """The other half of the decision: a deployment that really does run a departmental
+    subdomain declares it, and the same address then passes. `internal_domains` accepts
+    several, exactly as `authorized_partners` does — the boundary is configuration, not
+    a string-suffix guess."""
+    agent = InformationFlowAgent(
+        internal_domains=("hospital.internal", "clinic.hospital.internal"))
+    msg = _derived(IDENTIFIED, "nurse@clinic.hospital.internal")
+    v = agent.check(msg, _ctx(_phi_source(), msg))
     assert v.label is Label.PASS
 
 

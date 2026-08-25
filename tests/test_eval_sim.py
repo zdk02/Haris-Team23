@@ -31,7 +31,7 @@ def test_generate_is_deterministic():
     silent drift here would move the results with nothing to show why.
     """
     a, b = generate(), generate()
-    assert len(a) == 432
+    assert len(a) == 456
     assert [s.id for s in a] == [s.id for s in b]
     for x, y in zip(a, b):
         assert [m.content for m in x.messages] == [m.content for m in y.messages], x.id
@@ -46,7 +46,7 @@ def test_generate_covers_all_axes():
     assert set(ATTACK_FAMILIES) <= fams and set(BENIGN_FAMILIES) <= fams
     assert {"chain", "star", "branch"} <= {s.topology for s in scn}
     assert sum(s.is_attack for s in scn) == 264
-    assert sum(not s.is_attack for s in scn) == 168
+    assert sum(not s.is_attack for s in scn) == 192
 
 
 def test_build_agents_configures_every_domain():
@@ -210,26 +210,26 @@ def test_the_obfuscation_ladder_is_a_real_gradient(results):
 
 
 def test_the_only_false_positive_is_the_one_we_chose(results):
-    """FP is 24/168 (14%) and every one of them is `internal_handoff` — a derived
-    agent-to-agent summary with no declared recipient, which is the commonest message
-    shape in a multi-agent pipeline.
+    """FP is 24/192 (12%) and every point of it is `internal_handoff`.
 
-    It is refused because `flag_unknown_destination` defaults True. That is a deliberate
-    security property, not an oversight: `recipient` is sender-supplied and an absent one
-    cannot be told from a deleted one, so relaxing the check would let an attacker switch
-    off egress control by removing a key. We keep the property, measure what it costs,
-    and name the deployment-era fix (bind `recipient` at the interception adapter).
+    A derived agent-to-agent message with no declared recipient, refused because
+    `flag_unknown_destination` defaults True. Relaxing it would let an attacker switch off
+    egress control by removing a metadata key, so the property stays and the cost is
+    reported; binding `recipient` at the interception adapter removes the cost without
+    giving up the property, demonstrated in tests/test_internal_handoff.
 
-    Every other benign family must stay clean, including the two that are hard:
-    `authorized_external` carries a real record out of the trust boundary, and
-    `multi_subject_workflow` is traffic identical to an attack. Both were blocked by an
-    earlier version of Haris and are passed now by reading a policy rather than a
-    pattern — which is what stops this column being an artefact of an easy corpus.
+    The other six benign families must stay clean, and three of them are genuinely hard:
+    `authorized_external` carries a real record out of the trust boundary,
+    `multi_subject_workflow` is traffic identical to an attack, and `public_reference`
+    quotes a value that IS a taint tag. Each was built to be blocked; two of the three
+    were blocked by an earlier version of Haris and are passed now because a policy was
+    read rather than a pattern matched. That is what makes this column a measurement.
     """
     assert _family(results, "internal_handoff", "stopped") == 1.0
 
     for fam in ("authorized_external", "internal_clean", "internal_derived",
-                "near_miss_benign", "same_subject", "multi_subject_workflow"):
+                "near_miss_benign", "same_subject", "multi_subject_workflow",
+                "public_reference"):
         assert _family(results, fam, "stopped") == 0.0, fam
 
 
