@@ -78,6 +78,15 @@ def test_scanner_cannot_see_a_bare_name(scenarios):
     assert not _scanner_flags("Please follow up with Robert Roberts about the case.")
 
 
+def test_scanner_cannot_see_a_split_identifier(scenarios):
+    """Task K4. Neither half of a split reference matches anything on its own, so the
+    arm closest to a deployed DLP filter misses it — as does Haris. That both
+    content-reading arms fail locates the problem: it is per-message inspection as a
+    category, not one matcher being weaker than another."""
+    scn = _by_family(scenarios, "split_identifier")
+    assert not content_scanner(scn).stopped
+
+
 # --------------------------------------------------------------------------- #
 # Arm C
 # --------------------------------------------------------------------------- #
@@ -118,6 +127,18 @@ def test_heuristic_refuses_the_form_template(scenarios):
     assert metadata_heuristic(scn).stopped
 
 
+def test_heuristic_beats_haris_on_the_split_identifier(scenarios):
+    """Task K4, and the only attack family where the cheap baseline wins.
+
+    It refuses every external recipient without reading anything, so a payload it cannot
+    parse is no obstacle. Reading content is what lets Haris allow the partner referral
+    and the form template; it is also what splitting an identifier defeats. Worth stating
+    in the report rather than leaving for a reader to notice.
+    """
+    scn = _by_family(scenarios, "split_identifier")
+    assert metadata_heuristic(scn).stopped
+
+
 def test_heuristic_never_reads_content(scenarios):
     """Rewriting every message body must not change the heuristic's decision."""
     scn = _by_family(scenarios, "external_verbatim")
@@ -143,7 +164,7 @@ def test_every_arm_is_scored_on_every_scenario(scenarios):
 
 def test_run_all_covers_the_corpus():
     rows = run_all()
-    assert len(rows) == 504
+    assert len(rows) == 552
 
 
 def test_heuristic_allows_both_halves_of_the_partner_pair(scenarios):
