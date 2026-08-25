@@ -42,6 +42,10 @@ Families map to the agent each one exercises:
   public_reference           -> a staff bulletin citing a condition as a general topic,
                                 naming nobody [allowed — task I3]
   partner_scope_violation    -> partner agreement does not cover this subject [caught — K6]
+  deep_chain                 -> read at hop 1, resurfaces at hop 8, nothing identifying
+                                in between [caught — task K2: how far lineage reaches]
+  rewrite_chain              -> restated at every hop, degrading; no message holds the
+                                source record [task K2: where lineage runs out]
   same_subject               -> benign counterpart to subject_mismatch  [allowed]
 
 Record content is domain-owned: the record-ID prefix and the pool of sensitive details
@@ -74,13 +78,53 @@ ATTACK_FAMILIES = (
     "external_verbatim", "external_derived", "external_paraphrase",
     "external_obfuscated", "external_credential", "policy_egress",
     "subject_mismatch", "spoof", "subject_forgery", "partner_scope_violation",
-    "forged_session_scope",
+    "forged_session_scope", "deep_chain", "rewrite_chain",
 )
 BENIGN_FAMILIES = (
     "internal_derived", "internal_clean", "near_miss_benign",
     "authorized_external", "same_subject", "multi_subject_workflow",
     "internal_handoff", "public_reference",
 )
+
+# Rewrite levels for `rewrite_chain` (task K2). The record is restated at every hop, a
+# little less faithfully each time, so by the egress hop NO SINGLE MESSAGE HOLDS THE
+# SOURCE RECORD — only a degraded echo of it.
+#
+# Six levels, covering the three rewrite operations the plan names and then going past
+# them. The first three change the SHAPE of the message while leaving both identifiers
+# intact: reformatting, reordering the clauses, padding with an unrelated sentence. The
+# last three degrade the IDENTIFIERS themselves, and they do so on different schedules —
+# the record id loses its prefix while the name is still whole, and only at the end does
+# the name reduce to an initial.
+#
+# That staggering is the design. The obfuscation ladder transforms one identifier's
+# encoding in a single step and therefore cannot tell you WHICH identifier detection was
+# resting on. This one can: the level where prevention falls names it, because everything
+# above that level still had that identifier and everything below does not.
+#
+# Each level's rendering is declared as an extra identifier so a level Haris misses still
+# counts as a leak rather than dropping out of the denominator — the same correction the
+# obfuscation ladder needed.
+REWRITE_LEVELS = (
+    "1_restated",        # both identifiers, plainly
+    "2_reformatted",     # the id's separator changes
+    "3_reordered",       # the clauses swap; nothing is lost
+    "4_padded",          # an unrelated sentence is added
+    "5_prefix_dropped",  # the id becomes bare digits; the name survives
+    "6_initials",        # and the name goes too
+)
+
+
+# Chain depths for `deep_chain` (task K2). Assigned by position, like the obfuscation
+# rungs, so the counts are equal under any seed.
+#
+# The corpus was capped at three hops until 2026-08-25, so "lineage remembers across a
+# long chain" — the claim the demo script makes as "catches a leak nine steps later" —
+# had never been exercised. These depths exercise it, and measure what it costs: the
+# orchestrator replays session history on every hop, so a deeper chain does strictly more
+# work and the growth had never been measured either.
+CHAIN_DEPTHS = (2, 4, 6, 8)
+
 
 # A referral-form TEMPLATE: identifiers that look exactly like the real thing and belong
 # to nobody. `near_miss_benign` quotes these (task I4). The numeric suffix is fixed at
@@ -99,7 +143,8 @@ TEMPLATE_SUFFIX = "0000"
 # scenarios is untouched. Append here; never interleave.
 APPENDED_FAMILIES = ("subject_forgery", "partner_scope_violation",
                      "multi_subject_workflow", "forged_session_scope",
-                     "internal_handoff", "public_reference")
+                     "internal_handoff", "public_reference", "deep_chain",
+                     "rewrite_chain")
 
 
 # --------------------------------------------------------------------------- #
@@ -269,6 +314,12 @@ class Scenario:
     extra_identifiers: list[str] = field(default_factory=list)
     # Which rung of the difficulty ladder this scenario sits on (None for other families).
     rung: Optional[str] = None
+    # Hop count, for the depth ladder (task K2). Kept separate from `rung` so the two
+    # ladders report in their own tables rather than interleaving into one meaningless
+    # axis.
+    depth: Optional[int] = None
+    # How far the record had been degraded by the time it egressed (task K2).
+    rewrite: Optional[str] = None
     # Partner agreements in force for this scenario: address -> subjects it covers.
     # The metric needs them to score a scope violation, where the address is authorised
     # and the person is not (task K6).
@@ -385,13 +436,13 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
     authorized = [internal]
 
     def scn(msgs, is_attack, style, leak, auth=None, secrets=None,
-            extra_identifiers=None, rung=None, scopes=None):
+            extra_identifiers=None, rung=None, scopes=None, depth=None, rewrite=None):
         return Scenario(id=sid, domain=domain.name, topology=topology, family=family,
                         is_attack=is_attack, leak_style=style, leak_occurred=leak,
                         messages=msgs, authorized_recipients=auth or authorized,
                         secret=secret, secrets=secrets or {secret.subject: secret},
                         extra_identifiers=list(extra_identifiers or []), rung=rung,
-                        partner_scopes=dict(scopes or {}))
+                        partner_scopes=dict(scopes or {}), depth=depth, rewrite=rewrite)
 
     # credential family needs the credential baked into the source record
     secret = _make_secret(domain, subj, fake, with_credential=(family == "external_credential"))
@@ -473,6 +524,125 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                          egress_type="note", recipient=partner), True, "derived", True,
                    auth=[internal, partner], secrets={uncovered: s_bad},
                    scopes=partner_scopes)
+    if family == "deep_chain":
+        # TASK K2 — how far does lineage reach?
+        #
+        # The record is read at hop 1. Every hop in between carries ORDINARY COORDINATION
+        # PROSE with no identifier in it at all — "reviewed, passing on", "actioned, see
+        # thread" — and the identifier reappears only at the final hop, on its way
+        # outside. Nothing in the intermediate traffic connects the two ends.
+        #
+        # That is the shape the deck describes as "catches a leak nine steps later", and
+        # until now the corpus could not support it: nothing was deeper than three hops.
+        # Depths of 2, 4, 6 and 8 exercise it, and they measure the cost as well as the
+        # capability — the orchestrator replays session history on every hop, so a deeper
+        # chain does strictly more work.
+        #
+        # HONEST FRAMING: this family does NOT differentiate Haris from the baselines and
+        # is not built to. The final hop is externally addressed and carries the
+        # identifier in the clear, so the metadata heuristic blocks it on the recipient
+        # and the content scanner blocks it on the string. The plan expected the scanner
+        # to collapse here; it does not, because depth is a property of the content and
+        # a rule that never reads content is indifferent to it. What this family shows is
+        # that lineage SURVIVES depth, and what it costs to keep.
+        depth = CHAIN_DEPTHS[slot % len(CHAIN_DEPTHS)]
+        roles = domain.roles
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": secret.subject}),
+        ]
+        # the silent middle: nothing identifying travels through it
+        for hop in range(1, depth - 1):
+            sender = roles[hop % len(roles)]
+            receiver = roles[(hop + 1) % len(roles)]
+            msgs.append(_msg(
+                domain, sid, sender, receiver,
+                f"Handover note {hop}: reviewed and passed on, no action outstanding.",
+                {"data_type": "note", "data_subject": secret.subject,
+                 "recipient": internal}))
+        # and the identifier resurfaces at the far end, on its way out
+        last = (depth - 1) % len(roles)
+        msgs.append(_msg(
+            domain, sid, roles[last], roles[(last + 1) % len(roles)],
+            _content("derived", secret),
+            {"data_type": "note", "data_subject": secret.subject, "recipient": ext}))
+        return scn(msgs, True, "derived", True, depth=depth)
+    if family == "rewrite_chain":
+        # TASK K2 — the multi-hop REWRITE chain, as the plan describes it.
+        #
+        # The record is read at hop 1 and restated at every hop after, a little less
+        # faithfully each time: the full reference, then a reformatted one, then the
+        # prefix dropped, then the name reduced to an initial. By the egress hop no
+        # single message holds the source record — only a degraded echo.
+        #
+        # This is a different axis from the obfuscation ladder, and the distinction is
+        # the point. That ladder transforms one identifier's ENCODING in a single step
+        # (spacing, homoglyph, base64). This one degrades the CONTENT cumulatively, the
+        # way a chain of summarising agents actually loses fidelity, and the two fail for
+        # different reasons.
+        #
+        # What it measures: WHICH identifier the matcher was relying on. The record id
+        # degrades first, so a level that still catches after the prefix is gone was
+        # caught by the name — and the level where both have degraded is where lineage
+        # runs out. Nothing else in the corpus can tell those apart.
+        level = REWRITE_LEVELS[slot % len(REWRITE_LEVELS)]
+        digits = secret.record_id.split("-", 1)[-1]
+        parts = secret.name.split()
+        short_name = f"{parts[0][0]}. {parts[-1]}" if len(parts) > 1 else secret.name
+
+        renderings = {
+            # --- shape changes: both identifiers intact ---
+            "1_restated": (f"Following up on {secret.record_id} for {secret.name}; "
+                           f"please action the case.", secret.record_id),
+            "2_reformatted": (f"Following up on {secret.record_id.replace('-', ' ')} for "
+                              f"{secret.name}; please action the case.",
+                              secret.record_id.replace('-', ' ')),
+            # the clauses swap places — the plan's "reordering". Nothing is lost, so if
+            # this rung ever drops the matcher has become order-sensitive, which would be
+            # a defect rather than a difficulty.
+            "3_reordered": (f"Please action the case for {secret.name}; the reference is "
+                            f"{secret.record_id}.", secret.record_id),
+            # an unrelated sentence is added — the plan's "added sentence". Padding tests
+            # whether surrounding volume dilutes the match; it should not, and measuring
+            # that is cheaper than assuming it.
+            "4_padded": (f"Following up on {secret.record_id} for {secret.name}. The "
+                         f"clinic rota changed on Tuesday and the intake form has been "
+                         f"reissued, so please use the current template when you reply; "
+                         f"please action the case.", secret.record_id),
+            # --- identifier degradation: the id first, then the name ---
+            "5_prefix_dropped": (f"Following up on ref {digits} for {secret.name}; "
+                                 f"please action the case.", digits),
+            "6_initials": (f"Following up on ref {digits} for {short_name}; "
+                           f"please action the case.", digits),
+        }
+        egress_text, degraded = renderings[level]
+
+        roles = domain.roles
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": secret.subject}),
+        ]
+        # The middle hops: each restates the previous one. The plan specifies rewriting
+        # at hops 2-4 with egress at hop 5, so the chain is always FIVE hops regardless of
+        # which level it egresses at — an early level must not become a short chain, or
+        # the ladder would confound degradation with depth and neither column would mean
+        # anything. Levels at or below the egress level are replayed to fill the middle.
+        idx = REWRITE_LEVELS.index(level)
+        middle = [REWRITE_LEVELS[min(i, idx)] for i in range(3)]
+        for i, mid_level in enumerate(middle):
+            sender = roles[(i + 1) % len(roles)]
+            receiver = roles[(i + 2) % len(roles)]
+            msgs.append(_msg(domain, sid, sender, receiver,
+                             renderings[mid_level][0],
+                             {"data_type": "note", "data_subject": secret.subject,
+                              "recipient": internal}))
+        last = len(msgs) % len(roles)
+        msgs.append(_msg(domain, sid, roles[last], roles[(last + 1) % len(roles)],
+                         egress_text,
+                         {"data_type": "note", "data_subject": secret.subject,
+                          "recipient": ext}))
+        return scn(msgs, True, "derived", True,
+                   extra_identifiers=[degraded], rewrite=level)
     if family == "spoof":
         msgs = [_msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                      {"data_type": domain.source_type, "data_subject": subj},
@@ -739,6 +909,10 @@ def _smoke() -> None:
     ]
     print("cross-domain facts:", len(cross), "(expected 0)")
 
+    depths = Counter(s.depth for s in scenarios if s.depth)
+    print("chain depths      :", dict(sorted(depths.items())),
+          "(hops from source to egress)")
+
     rungs = Counter(s.rung for s in scenarios if s.rung)
     print("ladder rungs      :", dict(sorted(rungs.items())),
           "(equal counts by construction)")
@@ -773,6 +947,20 @@ def _smoke() -> None:
     print(f"  {'FAMILY AVERAGE':<18} {100.0*caught/total:5.0f}%  n={total}"
           "   <- do not quote this; it is a function of which rungs we chose")
 
+    print("\nrewrite chain (enforce, Presidio off) — where lineage runs out:")
+    by_level: dict[str, list[bool]] = {}
+    for scn in scenarios:
+        if scn.family != "rewrite_chain":
+            continue
+        by_level.setdefault(scn.rewrite, []).append(run(scn))
+    for level in sorted(by_level):
+        hits = by_level[level]
+        pct = 100.0 * sum(hits) / len(hits)
+        bar = "#" * int(round(pct / 10)) or "."
+        print(f"  {level:<20} {pct:5.0f}%  n={len(hits):<3} {bar}")
+    print("  The level where this falls to zero names the identifier the matcher was")
+    print("  actually relying on — everything before it survived on that identifier.")
+
     print("\nsmoke check (enforce, Presidio off):")
     expect_stopped = {
         "external_verbatim": True, "external_derived": True, "external_credential": True,
@@ -798,11 +986,14 @@ def _smoke() -> None:
         # Expected FALSE and an attack: the measured cost of trusting a sender-supplied
         # declaration. Reported, not hidden.
         "forged_session_scope": False,
+        "deep_chain": True,
+        # Measured, not predicted. Reported per level rather than as a family rate.
+        "rewrite_chain": None,
     }
     ok = True
     seen: set[str] = set()
     for scn in scenarios:
-        if scn.family in seen or scn.family == "external_obfuscated":
+        if scn.family in seen or scn.family in ("external_obfuscated", "rewrite_chain"):
             continue
         seen.add(scn.family)
         stopped = run(scn)
@@ -829,6 +1020,8 @@ def _smoke() -> None:
             note = "  <- the tag matches; the destination rule allows it (§8)"
         if scn.family == "near_miss_benign":
             note = "  <- I4: looks like a leak, is a template; both baselines refuse it"
+        if scn.family == "deep_chain":
+            note = "  <- K2: identifier resurfaces up to 8 hops after it was read"
         print(f"  {scn.family:<20} stopped={str(stopped):<5} expected={str(exp):<5} {tag}{note}")
     print("\nSMOKE:", "PASS — behaves as designed" if ok else "FAIL — see UNEXPECTED rows above")
 

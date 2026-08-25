@@ -1,5 +1,5 @@
 {
-  "attacks": 264,
+  "attacks": 312,
   "benign": 192,
   "families": {
     "authorized_external": {
@@ -7,6 +7,12 @@
       "is_attack": false,
       "n": 24,
       "stopped": 0.0
+    },
+    "deep_chain": {
+      "detected": 1.0,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 1.0
     },
     "external_credential": {
       "detected": 1.0,
@@ -92,6 +98,12 @@
       "n": 24,
       "stopped": 0.0
     },
+    "rewrite_chain": {
+      "detected": 0.8333,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 0.8333
+    },
     "same_subject": {
       "detected": 0.0,
       "is_attack": false,
@@ -117,5 +129,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 456
+  "scenarios": 504
 }

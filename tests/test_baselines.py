@@ -143,7 +143,7 @@ def test_every_arm_is_scored_on_every_scenario(scenarios):
 
 def test_run_all_covers_the_corpus():
     rows = run_all()
-    assert len(rows) == 456
+    assert len(rows) == 504
 
 
 def test_heuristic_allows_both_halves_of_the_partner_pair(scenarios):

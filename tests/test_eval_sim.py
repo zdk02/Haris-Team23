@@ -31,7 +31,7 @@ def test_generate_is_deterministic():
     silent drift here would move the results with nothing to show why.
     """
     a, b = generate(), generate()
-    assert len(a) == 456
+    assert len(a) == 504
     assert [s.id for s in a] == [s.id for s in b]
     for x, y in zip(a, b):
         assert [m.content for m in x.messages] == [m.content for m in y.messages], x.id
@@ -45,7 +45,7 @@ def test_generate_covers_all_axes():
     fams = {s.family for s in scn}
     assert set(ATTACK_FAMILIES) <= fams and set(BENIGN_FAMILIES) <= fams
     assert {"chain", "star", "branch"} <= {s.topology for s in scn}
-    assert sum(s.is_attack for s in scn) == 264
+    assert sum(s.is_attack for s in scn) == 312
     assert sum(not s.is_attack for s in scn) == 192
 
 
@@ -61,10 +61,10 @@ def test_build_agents_configures_every_domain():
 
 # NOTE: there is deliberately no `assert label_consistency_check(s) == s.is_attack` test.
 # The checker re-derives the label from the same metadata the generator wrote, so it is
-# structurally incapable of disagreeing - measured: 0 disagreements in 336. Asserting that
-# it agrees is a tautology, and dressing it up as "oracle correctness" overstated what the
+# structurally incapable of disagreeing - measured: 0 disagreements. Asserting that it
+# agrees is a tautology, and dressing it up as "oracle correctness" overstated what the
 # check establishes. What the check IS good for is confirming that the generated TRAFFIC
-# realises the intended label, which is what test_most_labels_are_re_derivable_from_traffic covers.
+# realises the intended label, which is what the next test covers.
 
 
 def test_only_the_two_indistinguishable_families_rest_on_construction():
@@ -147,7 +147,7 @@ def test_per_family_rates_match_the_committed_golden(results):
 def test_designed_catches_are_full(results):
     for fam in ("external_verbatim", "external_derived", "external_credential",
                 "policy_egress", "subject_mismatch", "spoof", "subject_forgery",
-                "partner_scope_violation"):
+                "partner_scope_violation", "deep_chain"):
         assert _family(results, fam, "stopped") == 1.0, fam
 
 
@@ -209,6 +209,25 @@ def test_the_obfuscation_ladder_is_a_real_gradient(results):
     assert _rung("6_base64") == 0.0
 
 
+def test_lineage_survives_the_depth_ladder(results):
+    """Task K2 — the record is read at hop 1, the middle hops carry only coordination
+    prose, and the identifier resurfaces at the last hop. Catching it requires
+    remembering hop 1 while standing at hop 8.
+
+    The corpus previously topped out at three hops, so the deck's "catches a leak nine
+    steps later" had nothing behind it. It does now, at every depth.
+
+    Not a differentiator, and `tests/test_deep_chain.py` records that both baselines
+    catch this family too: depth is a property of content, and a rule that never reads
+    content is indifferent to how many times the content was rewritten.
+    """
+    depths = {r["depth"] for r in results if r.get("depth")}
+    assert depths == {2, 4, 6, 8}, depths
+    for d in sorted(depths):
+        rows = [r for r in results if r.get("depth") == d]
+        assert _rate(rows, "stopped") == 1.0, d
+
+
 def test_the_only_false_positive_is_the_one_we_chose(results):
     """FP is 24/192 (12%) and every point of it is `internal_handoff`.
 
@@ -218,12 +237,14 @@ def test_the_only_false_positive_is_the_one_we_chose(results):
     reported; binding `recipient` at the interception adapter removes the cost without
     giving up the property, demonstrated in tests/test_internal_handoff.
 
-    The other six benign families must stay clean, and three of them are genuinely hard:
+    The other six benign families must stay clean, and four of them are genuinely hard:
     `authorized_external` carries a real record out of the trust boundary,
-    `multi_subject_workflow` is traffic identical to an attack, and `public_reference`
-    quotes a value that IS a taint tag. Each was built to be blocked; two of the three
-    were blocked by an earlier version of Haris and are passed now because a policy was
-    read rather than a pattern matched. That is what makes this column a measurement.
+    `multi_subject_workflow` is traffic identical to an attack, `public_reference` quotes
+    a value that IS a taint tag, and `near_miss_benign` is identifier-shaped content
+    heading outside that both baselines refuse. Each was built to be blocked; three of
+    the four were blocked by an earlier version of Haris and are passed now because a
+    policy was read rather than a pattern matched. That is what makes this column a
+    measurement.
     """
     assert _family(results, "internal_handoff", "stopped") == 1.0
 

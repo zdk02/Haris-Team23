@@ -140,6 +140,8 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "id": scn.id, "domain": scn.domain, "topology": scn.topology,
         "family": scn.family, "leak_style": scn.leak_style,
         "rung": scn.rung,                            # obfuscation ladder rung (task M2)
+        "depth": scn.depth,                          # chain depth in hops (task K2)
+        "rewrite": scn.rewrite,                      # rewrite-chain level (task K2)
         "difficulty": _DIFFICULTY.get(scn.family),   # None for non-exfiltration threats
         "label_attack": label_attack,
         "detected": detected, "stopped": stopped,
@@ -316,6 +318,50 @@ def report(records: list[dict]) -> None:
             print(f"  (!) {wide} of {len(by)} rungs have an interval too wide to quote as a")
             print( "      rate. Report the SHAPE of this curve — layout changes recovered,")
             print( "      encodings not — and treat the percentages as indicative only.")
+
+    # THE DEPTH LADDER (task K2). Two questions in one table: does lineage still catch
+    # the leak when the identifier is read at hop 1 and resurfaces at hop 8 with nothing
+    # identifying in between, and what does keeping that memory cost per hop?
+    #
+    # The second is the one nobody had measured. The orchestrator replays session history
+    # on every hop, so a deeper chain does strictly more work; whether that grows linearly
+    # or worse decides whether this design survives a long-running agent session.
+    deep = [r for r in records if r.get("depth")]
+    if deep:
+        print("\nBY CHAIN DEPTH  (identifier read at hop 1, resurfaces at the last hop)")
+        by = defaultdict(list)
+        for r in deep:
+            by[r["depth"]].append(r)
+        print(f"  {'hops':>6}{'prevented':>20}{'ms/hop':>10}{'ms/session':>13}")
+        for d in sorted(by):
+            rs = by[d]
+            ci = rate_ci(rs, "stopped")
+            lat = [x for r in rs for x in r["latencies"]]
+            per_hop = sum(lat) / len(lat) if lat else 0.0
+            per_session = sum(lat) / len(rs) if rs else 0.0
+            print(f"  {d:>6}{ci.pct():>20}{per_hop:>10.3f}{per_session:>13.3f}")
+        print("  If ms/hop climbs with depth, the cost of remembering is superlinear in")
+        print("  session length and belongs in §8 as a scaling limit; if it is flat, the")
+        print("  history replay is not the bottleneck it looks like.")
+
+    # THE REWRITE CHAIN (task K2). The record is restated at every hop, degrading, so no
+    # message holds the source record by the time it egresses. The level where prevention
+    # falls names the identifier the matcher was actually relying on: everything above it
+    # survived on that identifier and nothing below it has anything left to survive on.
+    rewrites = [r for r in records if r.get("rewrite")]
+    if rewrites:
+        print("\nBY REWRITE LEVEL  (the record degrades as it is passed along)")
+        by = defaultdict(list)
+        for r in rewrites:
+            by[r["rewrite"]].append(r)
+        for level in sorted(by):
+            rs = by[level]
+            ci = rate_ci(rs, "stopped")
+            bar = "#" * int(round(ci.rate * 10)) or "."
+            print(f"  {level:<20} prevent={ci.pct():<16} (n={ci.n}) {bar}")
+        print("  Distinct from the obfuscation ladder: that transforms one identifier's")
+        print("  encoding in a single step, this degrades the content cumulatively across")
+        print("  hops. They fail for different reasons and are reported apart.")
 
     breakdown("BY FAMILY", "family", records)
 
