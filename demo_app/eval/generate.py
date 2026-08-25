@@ -30,7 +30,8 @@ Families map to the agent each one exercises:
   subject_forgery            -> Subject-binding, CONTENT binding        [caught — task K1]
   spoof                      -> Identity (missing token)               [caught]
   internal_derived/clean     -> benign, internal                        [allowed]
-  near_miss_benign           -> benign, looks sensitive but internal    [allowed]
+  near_miss_benign           -> a form TEMPLATE sent outside: identifier-shaped, owned
+                                by nobody [allowed — task I4; both baselines refuse it]
   authorized_external        -> benign, HARD: real data to a real partner [allowed — K6]
   multi_subject_workflow     -> benign ward round, two patients, one session [allowed]
   forged_session_scope       -> the same declaration, made by an attacker
@@ -80,6 +81,18 @@ BENIGN_FAMILIES = (
     "authorized_external", "same_subject", "multi_subject_workflow",
     "internal_handoff", "public_reference",
 )
+
+# A referral-form TEMPLATE: identifiers that look exactly like the real thing and belong
+# to nobody. `near_miss_benign` quotes these (task I4). The numeric suffix is fixed at
+# 0000 so the string still matches an identifier-shaped regex — the point of the family
+# is that a content scanner cannot tell it from a real record, while lineage can, because
+# these values were never read in the session.
+#
+# A test asserts no generated record ever draws `-0000`, so the template cannot
+# accidentally become somebody's real identifier.
+TEMPLATE_NAME = "Sample Patient"
+TEMPLATE_SUFFIX = "0000"
+
 
 # Families added after the original corpus was frozen. They are generated in a SECOND
 # PASS, after every original family, so the seeded RNG stream feeding the original
@@ -474,8 +487,39 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(_flow(domain, sid, secret, topology, style="clean",
                          egress_type="note", recipient=internal), False, "none", False)
     if family == "near_miss_benign":
-        return scn(_flow(domain, sid, secret, topology, style="derived",
-                         egress_type="note", recipient=internal), False, "derived", False)
+        # TASK I4 — content that LOOKS like a leak and is not.
+        #
+        # This family used to be a byte-identical copy of `internal_derived`: same flow,
+        # same style, same recipient, 24 scenarios testing nothing the other family did
+        # not. "Near miss" was a name rather than a property.
+        #
+        # It is now a referral-form template quoted in a message to an OUTSIDE address:
+        # a name and a record id in exactly the shape of the real thing, belonging to
+        # nobody, never read in this session. Legitimate — this is how a form gets
+        # documented — and the hardest possible benign case for a stateless detector.
+        #
+        # This is the only benign family where the baselines and Haris disagree, and it
+        # is the half of the argument the corpus was missing. Everywhere else a benign
+        # family is either allowed by everything or refused by Haris. Here:
+        #   * the content scanner sees an identifier-shaped string heading outside and
+        #     blocks it — a false positive it cannot avoid without reading lineage;
+        #   * the metadata heuristic sees an unauthorised recipient and blocks it;
+        #   * Haris allows it, because nothing from the session's lineage resurfaces.
+        # Lineage does not only catch more, it also refuses less. That claim needed a
+        # measurement and now has one.
+        roles = domain.roles
+        template_id = f"{domain.id_label}-{TEMPLATE_SUFFIX}"
+        msgs = [
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
+                 {"data_type": domain.source_type, "data_subject": secret.subject}),
+            _msg(domain, sid, roles[1], roles[-1],
+                 f"Reminder of the referral form layout — Name: {TEMPLATE_NAME}, "
+                 f"{domain.id_label}: {template_id}. These are placeholders; complete "
+                 f"the form in the portal rather than by email.",
+                 {"data_type": "note", "data_subject": secret.subject,
+                  "recipient": ext}),
+        ]
+        return scn(msgs, False, "none", False)
     if family == "authorized_external":
         # THE HARD BENIGN CASE. Real patient data, real identifiers, leaving the trust
         # boundary to an outside address — everything a leak looks like — and it is
@@ -783,6 +827,8 @@ def _smoke() -> None:
             note = "  <- FALSE POSITIVE: no recipient declared, so we fail closed (§8)"
         if scn.family == "public_reference":
             note = "  <- the tag matches; the destination rule allows it (§8)"
+        if scn.family == "near_miss_benign":
+            note = "  <- I4: looks like a leak, is a template; both baselines refuse it"
         print(f"  {scn.family:<20} stopped={str(stopped):<5} expected={str(exp):<5} {tag}{note}")
     print("\nSMOKE:", "PASS — behaves as designed" if ok else "FAIL — see UNEXPECTED rows above")
 

@@ -98,10 +98,24 @@ def test_heuristic_blocks_a_second_subject(scenarios):
 
 
 def test_heuristic_allows_authorised_internal_traffic(scenarios):
-    for family in ("internal_clean", "internal_derived", "near_miss_benign",
-                   "same_subject"):
+    for family in ("internal_clean", "internal_derived", "same_subject"):
         scn = _by_family(scenarios, family)
         assert not metadata_heuristic(scn).stopped, family
+
+
+def test_heuristic_refuses_the_form_template(scenarios):
+    """`near_miss_benign` used to be listed above as ordinary internal traffic, because
+    it was a byte-identical copy of `internal_derived`. Task I4 made it a genuine near
+    miss: a referral-form template addressed OUTSIDE the boundary, carrying identifiers
+    that look real and belong to nobody.
+
+    The heuristic blocks it on the recipient alone, without reading a byte — a false
+    positive it cannot avoid, because avoiding it requires knowing what the session
+    actually read. That is the point of the family, and the only place in the corpus
+    where Haris is more PRECISE than a baseline rather than merely catching more.
+    """
+    scn = _by_family(scenarios, "near_miss_benign")
+    assert metadata_heuristic(scn).stopped
 
 
 def test_heuristic_never_reads_content(scenarios):
