@@ -20,7 +20,10 @@ scored by the same rule. Run `python -m demo_app.eval.baselines` for the four-ar
 
 Then it reports, overall and broken down by leak-style / domain / family:
   * detection rate       (of labelled attacks, fraction detected in monitor)
-  * leak-prevention rate (of labelled attacks, fraction stopped in enforce)
+  * EXFILTRATION prevention and BOUNDARY-CROSSING prevention, separately (task I5):
+    an identifier reaching an outside address and one patient's record reaching the
+    wrong workflow are both violations, but they are different claims and a single
+    combined rate lets a reader hear the first when half the denominator is the second
   * false-positive rate  (of labelled benign, fraction wrongly stopped in enforce)
   * latency              (avg + p95 per hop, from the tamper-evident audit log)
 
@@ -175,49 +178,70 @@ def report(records: list[dict]) -> None:
     benign = [r for r in records if not r["label_attack"]]
     all_lat = sorted(x for r in records for x in r["latencies"])
 
-    prevented = sum(1 for r in attacks if r["stopped"])
-
-    egress = [r for r in attacks if r["egresses"]]
-    real = [r for r in attacks if r["leak_unmediated"]]
-    still = sum(1 for r in real if r["leak_haris"])
-
     print(f"scenarios: {len(records)}  (attacks {len(attacks)} · benign {len(benign)})\n")
+
+    # ------------------------------------------------------------------ #
+    # TWO CLAIMS, TWO DENOMINATORS (task I5)
+    # ------------------------------------------------------------------ #
+    #
+    # A single "leak prevention" number over every attack that goes wrong mixes two
+    # different things. `external_verbatim` sends an identifier to an address outside the
+    # trust boundary: data leaves, and stopping it is exfiltration prevention.
+    # `subject_forgery` hands one patient's record to a workflow bound to another, and
+    # `spoof` arrives without a token — both are real violations, and in both cases
+    # nothing leaves the building at all.
+    #
+    # Reporting them together lets a reader hear "we prevented 152 leaks" when a third of
+    # those scenarios had no egress path to leak through. Neither claim is weaker than
+    # the other; they are answers to different questions, and the split is what lets a
+    # reader check which one a given family supports.
+    egress_leaks = [r for r in attacks if r["egresses"] and r["leak_unmediated"]]
+    inside_only = [r for r in attacks if not r["egresses"] and r["leak_unmediated"]]
+    no_leak_path = [r for r in attacks if not r["leak_unmediated"]]
+
     print("CORPUS  (measured by outcome, not by any detector's verdict)")
-    # Since the subject and scope rules, a leak no longer has to EGRESS: handing one
-    # patient's record to a workflow bound to another, or to a partner whose agreement
-    # does not cover them, leaks without anything leaving the building. So the corpus
-    # splits three ways rather than nested ones - an earlier version subtracted these
-    # two counts and printed a negative.
-    egress_leaks = [r for r in egress if r["leak_unmediated"]]
-    inside_leaks = [r for r in real if not r["egresses"]]
-    print(f"  attack scenarios              : {len(attacks)}")
-    print(f"  ...addressed outside at all   : {len(egress)}  "
-          f"({len(attacks)-len(egress)} have no egress path)")
-    print(f"  ......of those, DO leak       : {len(egress_leaks)}  "
-          f"({len(egress)-len(egress_leaks)} egress but carry no identifier to leak)")
-    print(f"  ...leak WITHOUT egressing     : {len(inside_leaks)}  "
-          f"(wrong data subject, or outside a partner's agreement)")
-    print(f"  ...that DO leak unmediated    : {len(real)}  = the denominator below")
+    print(f"  attack scenarios                    : {len(attacks)}")
+    print(f"  ...EXFILTRATION: reach an outside address with an identifier")
+    print(f"                                      : {len(egress_leaks)}")
+    print(f"  ...BOUNDARY CROSSINGS: wrong subject, or outside a partner's agreement,")
+    print(f"     with nothing leaving the system  : {len(inside_only)}")
+    print(f"  ...no leak path at all              : {len(no_leak_path)}  "
+          f"(policy violations that carry nothing to leak)")
     print( "  A secret 'leaks' when content reaching an unauthorised recipient still")
     print( "  carries an injected identifier, when one subject's record surfaces in a")
     print( "  message declared about another, or when it reaches a partner whose")
     print( "  agreement does not cover that subject. Same rule scores every arm.\n")
+
+    def _stopped_ci(rows):
+        return rate_ci([{"ok": not r["leak_haris"]} for r in rows], "ok") if rows else None
+
+    exfil_ci = _stopped_ci(egress_leaks)
+    inside_ci = _stopped_ci(inside_only)
+    both_ci = _stopped_ci(egress_leaks + inside_only)
+
     print("HEADLINE  (95% bootstrap CI in brackets — task M4; a rate without one hides")
     print( "           whether it rests on 168 observations or on four)")
-    prevented_ci = rate_ci([{"ok": not r["leak_haris"]} for r in real], "ok")
-    print(f"  leak prevention: {len(real)-still}/{len(real)} of the scenarios that actually "
-          f"leak -> {prevented_ci.pct() if prevented_ci else '—'}")
-    print(f"  (verdict-based : {prevented}/{len(attacks)} stopped  -> "
-          f"{_pct(prevented/len(attacks))}  — counts non-leaking scenarios in the denominator)")
+    print(f"  exfiltration prevented   : {exfil_ci.pct() if exfil_ci else '—'}  "
+          f"(n={len(egress_leaks)}) — an identifier reached an outside address")
+    print(f"  boundary crossings caught: {inside_ci.pct() if inside_ci else '—'}  "
+          f"(n={len(inside_only)}) — wrong subject or outside an agreement, no egress")
+    print(f"  ...combined              : {both_ci.pct() if both_ci else '—'}  "
+          f"(n={len(egress_leaks) + len(inside_only)})  <- quote the two above, not this")
+
     det_ci = rate_ci(attacks, "detected")
     fp_ci = rate_ci(benign, "stopped")
-    print(f"  detection     : {det_ci.pct() if det_ci else '—'}  (monitor arm)")
-    print(f"  false positive: {fp_ci.pct() if fp_ci else '—'}  "
+    print(f"  detection                : {det_ci.pct() if det_ci else '—'}  (monitor arm)")
+    print(f"  false positive           : {fp_ci.pct() if fp_ci else '—'}  "
           f"({sum(1 for r in benign if r['stopped'])}/{len(benign)} benign wrongly stopped)")
-    print(f"  utility       : {_pct(1 - _rate(benign, 'stopped'))}  (benign traffic delivered unharmed)")
+    print(f"  utility                  : {_pct(1 - _rate(benign, 'stopped'))}  "
+          f"(benign traffic delivered unharmed)")
+    print(f"  (verdict-based           : {sum(1 for r in attacks if r['stopped'])}"
+          f"/{len(attacks)} stopped -> {_pct(_rate(attacks, 'stopped'))}  "
+          f"— counts scenarios with nothing to leak)")
     if all_lat:
         p95 = all_lat[min(len(all_lat) - 1, int(0.95 * len(all_lat)))]
-        print(f"  latency/hop   : {sum(all_lat)/len(all_lat):.2f} ms avg · {p95:.2f} ms p95")
+        print(f"  latency/hop              : {sum(all_lat)/len(all_lat):.2f} ms avg · "
+              f"{p95:.2f} ms p95")
 
     def breakdown(title, key, rows):
         """Every column carries its 95% interval (task M4).

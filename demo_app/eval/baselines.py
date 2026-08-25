@@ -314,6 +314,32 @@ def _false_positive(rows: list[dict], key: str) -> Optional[float]:
     return sum(1 for r in benign if r["arms"][key]["stopped"]) / len(benign)
 
 
+def _exfiltration_ci(rows: list[dict], key: str) -> Optional[Interval]:
+    """Prevention over scenarios where an identifier reaches an OUTSIDE address.
+
+    Split from the combined rate by task I5. Data leaving the trust boundary and one
+    patient's record reaching the wrong workflow are both violations, but they are
+    different claims: the first is exfiltration, the second is a boundary crossing with
+    nothing leaving the system. A reader hearing "leak prevention" thinks of the first.
+    """
+    real = [r for r in rows if r["label_attack"] and r["leak_unmediated"]
+            and r["egresses"]]
+    if not real:
+        return None
+    return rate_ci([{"ok": not r["arms"][key]["leaked"]} for r in real], "ok")
+
+
+def _boundary_ci(rows: list[dict], key: str) -> Optional[Interval]:
+    """Prevention over violations with NO egress path: wrong data subject, or a partner
+    whose agreement does not cover this person. Nothing leaves the building, and the two
+    families here are exactly the ones no baseline can see."""
+    real = [r for r in rows if r["label_attack"] and r["leak_unmediated"]
+            and not r["egresses"]]
+    if not real:
+        return None
+    return rate_ci([{"ok": not r["arms"][key]["leaked"]} for r in real], "ok")
+
+
 def _prevention_ci(rows: list[dict], key: str) -> Optional[Interval]:
     """Prevention with its 95% interval (task M4).
 
@@ -351,15 +377,25 @@ def report(rows: list[dict]) -> None:
     print( "  record surface in a message declared about another?\n")
 
     print( "  95% bootstrap CI in brackets (task M4). The arms share a corpus, so the")
-    print( "  DIFFERENCES between them are better evidence than any single rate.\n")
-    print(f"  {'arm':<20}{'prevention':>20}{'false pos':>20}{'ms/hop':>10}")
+    print( "  DIFFERENCES between them are better evidence than any single rate.")
+    print( "  Exfiltration and boundary crossings are reported apart (task I5): the first")
+    print( "  is data leaving the trust boundary, the second is one patient's record")
+    print( "  reaching the wrong workflow with nothing leaving at all.\n")
+    n_ex = len([r for r in rows if r["label_attack"] and r["leak_unmediated"]
+                and r["egresses"]])
+    n_bd = len([r for r in rows if r["label_attack"] and r["leak_unmediated"]
+                and not r["egresses"]])
+    print(f"  {'arm':<20}{f'exfiltration (n={n_ex})':>24}"
+          f"{f'boundary (n={n_bd})':>22}{'false pos':>20}{'ms/hop':>9}")
     for arm in ARMS:
-        prev = _prevention_ci(rows, arm.key)
+        ex = _exfiltration_ci(rows, arm.key)
+        bd = _boundary_ci(rows, arm.key)
         fp = _false_positive_ci(rows, arm.key)
         lat = _avg_latency(rows, arm.key)
         lat_s = "—" if lat is None else f"{lat:.2f}"
-        print(f"  {arm.label:<20}{(prev.pct() if prev else '—'):>20}"
-              f"{(fp.pct() if fp else '—'):>20}{lat_s:>10}")
+        print(f"  {arm.label:<20}{(ex.pct() if ex else '—'):>24}"
+              f"{(bd.pct() if bd else '—'):>22}"
+              f"{(fp.pct() if fp else '—'):>20}{lat_s:>9}")
     print()
     for arm in ARMS:
         print(f"  {arm.label:<20} {arm.blurb}")
@@ -417,6 +453,10 @@ def report(rows: list[dict]) -> None:
             ci = _false_positive_ci(rs, a.key)
             cells += f"{(ci.pct() if ci else '—'):>18}"
         print(f"  {fam:<24}{len(rs):>4}{cells}")
+
+    print("\n  The boundary column is where the arms separate: both baselines score 0%")
+    print("  there and Haris 100%, because subject_forgery and partner_scope_violation")
+    print("  have faultless metadata and nothing leaves the system to inspect.")
 
     print("\nREAD THIS BEFORE QUOTING THE TABLE")
     print("  * Arm B has no name detection: Presidio is Haris's own detector, so lending")
