@@ -262,6 +262,7 @@ def score_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "rung": scn.rung,
         "depth": scn.depth,
         "rewrite": scn.rewrite,
+        "record_format": scn.record_format,
         "label_attack": label_attack,
         "egresses": egresses(scn.messages, scn.authorized_recipients, dom.internal_at),
         "leak_unmediated": leaked(list(scn.messages), *args,

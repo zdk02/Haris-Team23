@@ -171,6 +171,13 @@ def test_no_attack_family_became_permitted(scenarios):
                                   # Lineage tracks what a session read and whether it
                                   # resurfaces, not whether fragments compose — an
                                   # architectural limit, not a threshold (§8)
+        "record_format",          # task N1: a narrative note and a chat transcript defeat
+                                  # the structured fallback parser entirely. The egress
+                                  # hop is byte-identical across all four formats, so
+                                  # this is the PARSER moving and not the threat — and
+                                  # every other family in the corpus is written in the
+                                  # one shape that parser was built for, which is what
+                                  # conditions the Presidio-off headline
     }
     for scn in [s for s in scenarios if s.is_attack]:
         if scn.family in expected_missed:

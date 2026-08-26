@@ -1,5 +1,5 @@
 {
-  "attacks": 360,
+  "attacks": 384,
   "benign": 192,
   "families": {
     "authorized_external": {
@@ -98,6 +98,12 @@
       "n": 24,
       "stopped": 0.0
     },
+    "record_format": {
+      "detected": 0.5,
+      "is_attack": true,
+      "n": 24,
+      "stopped": 0.5
+    },
     "rewrite_chain": {
       "detected": 0.8333,
       "is_attack": true,
@@ -141,5 +147,5 @@
       "stopped": 1.0
     }
   },
-  "scenarios": 552
+  "scenarios": 576
 }

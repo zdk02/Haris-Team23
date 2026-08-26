@@ -142,6 +142,7 @@ def run_scenario(scn: Scenario, include_secrets: bool = False) -> dict:
         "rung": scn.rung,                            # obfuscation ladder rung (task M2)
         "depth": scn.depth,                          # chain depth in hops (task K2)
         "rewrite": scn.rewrite,                      # rewrite-chain level (task K2)
+        "record_format": scn.record_format,          # source record shape (task N1)
         "difficulty": _DIFFICULTY.get(scn.family),   # None for non-exfiltration threats
         "label_attack": label_attack,
         "detected": detected, "stopped": stopped,
@@ -362,6 +363,24 @@ def report(records: list[dict]) -> None:
         print("  Distinct from the obfuscation ladder: that transforms one identifier's")
         print("  encoding in a single step, this degrades the content cumulatively across")
         print("  hops. They fail for different reasons and are reported apart.")
+
+    # BY RECORD FORMAT (task N1). The egress hop is identical across these scenarios, so
+    # any variation here is the source PARSER and not the threat. With Presidio off the
+    # structured extractor is the only source of taint tags, and this is the measurement
+    # of how much that matters.
+    fmts = [r for r in records if r.get("record_format")]
+    if fmts:
+        print("\nBY RECORD FORMAT  (same leak, four source shapes)")
+        by = defaultdict(list)
+        for r in fmts:
+            by[r["record_format"]].append(r)
+        for fmt in sorted(by):
+            rs = by[fmt]
+            ci = rate_ci(rs, "stopped")
+            bar = "#" * int(round(ci.rate * 10)) or "."
+            print(f"  {fmt:<18} prevent={ci.pct():<16} (n={ci.n}) {bar}")
+        print("  Every other family in the corpus uses the structured shape, so the")
+        print("  headline rates are conditioned on it. Quote this table beside them.")
 
     breakdown("BY FAMILY", "family", records)
 
