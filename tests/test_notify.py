@@ -212,3 +212,81 @@ def test_webhook_sends_explicit_user_agent(monkeypatch):
         NotificationEvent.operational("x", "hi"))
     ua = captured["req"].get_header("User-agent")
     assert ua and "urllib" not in ua
+
+
+
+# --- R1 / R2 / R8: de-dup keys, a bounded table, and honest counters --------------------
+def test_two_sessions_are_two_incidents_not_one():
+    """Finding 10. The key was (category, source, summary) with no session, so two subjects'
+    blocked leaks collapsed into one alert — the KPI tile said "Blocked 3" and the banner
+    showed 2, a contradiction visible on one screen of the demo."""
+    cap = CaptureChannel()
+    n = Notifier(channels=[cap])
+    for sid in ("s-tc2", "s-tc3"):
+        n.notify(NotificationEvent.security(
+            "orchestrator", "a credential flow to an external recipient was blocked",
+            session_id=sid, reference="a" * 64))
+    assert len(cap.got) == 2
+    assert n.counts["suppressed"] == 0
+
+
+def test_one_crashing_detector_still_collapses():
+    """The other half of R1: an operational storm MUST still collapse to one alert."""
+    cap = CaptureChannel()
+    n = Notifier(channels=[cap])
+    for _ in range(50):
+        n.notify(NotificationEvent.operational("orchestrator", "SecretsPII raised ValueError"))
+    assert len(cap.got) == 1
+    assert n.counts["suppressed"] == 49
+
+
+def test_a_storm_inside_one_session_still_collapses():
+    """The security key is per-session, not per-event: the same incident re-reported inside
+    one session is still one incident."""
+    cap = CaptureChannel()
+    n = Notifier(channels=[cap])
+    for _ in range(10):
+        n.notify(NotificationEvent.security("orchestrator", "blocked",
+                                            session_id="s-1", reference="b" * 64))
+    assert len(cap.got) == 1
+    assert n.counts["suppressed"] == 9
+
+
+def test_the_recent_table_is_hard_capped():
+    """R2. The Notifier outlives every request in the deployed dashboard; an unbounded dict
+    keyed by summary text is a slow leak in the component that must survive an incident."""
+    n = Notifier(channels=[])
+    for i in range(1500):
+        n.notify(NotificationEvent.operational("src", f"distinct summary {i}"))
+    assert len(n._recent) <= 1000
+
+
+def test_an_expired_suppression_emits_a_rollup(monkeypatch):
+    """R2. Alerts collapsed into an alert that never got a follow-up must not vanish."""
+    cap = CaptureChannel()
+    n = Notifier(channels=[cap], dedup_window_s=1.0)
+    clock = [1000.0]
+    monkeypatch.setattr("haris.notify.notifier.time.monotonic", lambda: clock[0])
+    n.notify(NotificationEvent.operational("src", "boom"))          # emitted
+    n.notify(NotificationEvent.operational("src", "boom"))          # suppressed
+    clock[0] += 10.0                                                # past 2 x window
+    n.notify(NotificationEvent.operational("other", "unrelated"))   # triggers the prune
+    assert any("expired without a follow-up" in e.summary for e in cap.got)
+
+
+def test_counts_separate_delivered_failed_and_skipped(monkeypatch):
+    """R8. A channel present but UNCONFIGURED is `skipped`, not `delivered` — counting a
+    no-op webhook as a delivery reports a delivery that never happened."""
+    class Boom(Channel):
+        name = "boom"
+        min_severity = Severity.INFO
+        def send(self, event): raise RuntimeError("nope")
+
+    monkeypatch.delenv("HARIS_ALERT_WEBHOOK", raising=False)
+    n = Notifier(channels=[CaptureChannel(Severity.INFO), Boom(),
+                           WebhookChannel(min_severity=Severity.INFO)])
+    n.notify(NotificationEvent.operational("src", "x"))
+    assert n.counts["emitted"] == 1
+    assert n.counts["delivered"] == 1
+    assert n.counts["failed"] == 1
+    assert n.counts["skipped"] == 1

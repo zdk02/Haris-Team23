@@ -15,6 +15,10 @@ Two rules make this safe, and they match the posture we already have elsewhere:
     without the secret ever entering the alert or a channel. Same "minimize what Haris
     stores" principle, applied to alerts. (The Notifier enforces this at its boundary; the
     schema documents it.)
+  * DE-DUP KEY — `dedup_key` decides which alerts the Notifier treats as "the same alert".
+    It is derived from already-whitelisted fields only, so it is safe across the sanitize
+    boundary. `.security()` sets one carrying `session_id` and `reference`; `.operational()`
+    leaves it None on purpose. See the constructors.
   * SERIALIZABLE — `timestamp` is an isoformat STRING, consistent with `AuditRecord.timestamp`,
     so an event drops straight into a JSONL line or a webhook JSON body with no conversion.
 
@@ -61,6 +65,7 @@ class NotificationEvent(BaseModel):
     session_id: Optional[str] = None               # ties an alert to a session in the audit log
     timestamp: str = Field(default_factory=_now_iso)   # isoformat string, like AuditRecord.timestamp
     metadata: dict[str, Any] = Field(default_factory=dict)  # escape hatch — same convention as Message
+    dedup_key: Optional[str] = None                # collapse key; None => category|source|summary
 
     def one_line(self) -> str:
         """Canonical single-line rendering, reused by the operational log, the webhook body,
@@ -79,30 +84,46 @@ class NotificationEvent(BaseModel):
                     severity: Severity = Severity.CRITICAL,
                     reference: Optional[str] = None,
                     session_id: Optional[str] = None,
+                    dedup_key: Optional[str] = None,
                     **metadata: Any) -> "NotificationEvent":
-        """Haris's own health/failure (detector crash, fail-closed, health-check down)."""
+        """Haris's own health/failure (detector crash, fail-closed, health-check down).
+
+        No default dedup_key ON PURPOSE: one detector crashing on every hop SHOULD collapse
+        into a single alert with a suppressed-count. That storm is what the Notifier's
+        de-duplication exists to contain."""
         return cls(category=Category.OPERATIONAL, severity=severity, source=source,
                    summary=summary, reference=reference, session_id=session_id,
-                   metadata=metadata)
+                   dedup_key=dedup_key, metadata=metadata)
 
     @classmethod
     def security(cls, source: str, summary: str, *,
                  severity: Severity = Severity.WARNING,
                  reference: Optional[str] = None,
                  session_id: Optional[str] = None,
+                 dedup_key: Optional[str] = None,
                  **metadata: Any) -> "NotificationEvent":
-        """A security event a human should review (a real leak blocked at egress)."""
+        """A security event a human should review (a real leak blocked at egress).
+
+        Unlike an operational storm, two security incidents are two incidents even when they
+        phrase identically: a leak in session A and a leak in session B are different
+        subjects, different content, different investigations. Collapsing them DELETES one -
+        measured in our own demo, where the KPI tile read "Blocked 3" and the banner showed
+        2. So the default key carries session_id and reference (the content hash) as well.
+        A genuine storm inside ONE session still collapses, because both are then equal."""
+        key = dedup_key or "|".join(
+            ["security", source, summary, session_id or "", reference or ""])
         return cls(category=Category.SECURITY, severity=severity, source=source,
                    summary=summary, reference=reference, session_id=session_id,
-                   metadata=metadata)
+                   dedup_key=key, metadata=metadata)
 
     @classmethod
     def client_error(cls, source: str, summary: str, *,
                      severity: Severity = Severity.WARNING,
                      reference: Optional[str] = None,
                      session_id: Optional[str] = None,
+                     dedup_key: Optional[str] = None,
                      **metadata: Any) -> "NotificationEvent":
         """The protected app ('client') reported its own failure via the error hook."""
         return cls(category=Category.CLIENT_ERROR, severity=severity, source=source,
                    summary=summary, reference=reference, session_id=session_id,
-                   metadata=metadata)
+                   dedup_key=dedup_key, metadata=metadata)
