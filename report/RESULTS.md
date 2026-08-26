@@ -10,6 +10,7 @@ from a terminal, and nothing in the report or the deck should be either: if a nu
 python -m demo_app.eval.runner    > report/appendix/runner-presidio-off.txt
 python -m demo_app.eval.baselines > report/appendix/four-arm-presidio-off.txt
 python -m demo_app.eval.simulate --secrets --json demo_app/eval/presidio_on.json
+python -m demo_app.eval.latency   --json report/appendix/latency-presidio-off.json
 python -m demo_app.eval.golden          # per-family rates, committed as golden_rates.json
 ```
 
@@ -51,7 +52,7 @@ different:
 | **boundary crossings caught** | **100% [94–100]** | 48 |
 | detection (monitor arm) | 76% [72–80] | 384 |
 | false positives | 12% [8–17] | 24/192 |
-| latency per hop | 0.07 ms avg · 0.20 ms p95 | |
+| mediation cost per hop | 0.034 ms median (12.55 ms with Presidio) | see §4b |
 
 Intervals are 95% bootstrap (`demo_app/eval/stats.py`), seeded. **Quote the two claims
 separately.** A combined "77% leak prevention" reads as exfiltration when a sixth of its
@@ -161,9 +162,10 @@ relevant for a domain keyed by short codes.
 **Chain depth** — identifier read at hop 1, resurfacing at the last hop, nothing
 identifying in between. 100% at 2, 4, 6 and 8 hops.
 
-Per-hop cost **falls** with depth (0.109 → 0.061 ms from 2 to 8 hops): the tag cache
-amortises across a session. Do not claim superlinear cost — an earlier run suggested it and
-was measuring warm-up.
+Per-hop cost **falls** with depth (0.097 → 0.060 ms from 2 to 8 hops): the tag cache
+amortises across a session, so a longer session costs less per message rather than more.
+An earlier run suggested the opposite and was measuring warm-up; do not claim superlinear
+cost.
 
 **Record format** — same leak, same egress message, five source shapes. All 100%.
 
@@ -173,6 +175,58 @@ extractor is the only source of taint tags — so the headline had been conditio
 corpus written in the one shape the parser understood. Fixed rather than documented.
 
 ---
+
+## 4b. Mediation cost
+
+`report/appendix/latency-presidio-{off,on}.json` · `python -m demo_app.eval.latency`
+
+**CPU: AMD64 Family 25 Model 80 (AuthenticAMD) · Windows 11 · Python 3.13.4.** These
+figures are not portable; quote them with the hardware or not at all.
+
+| arm | median | IQR | p95 | mediation cost |
+|---|---|---|---|---|
+| no agents (floor) | 0.007 ms | 0.007–0.007 | 0.008 | — |
+| Haris, structural agents | 0.041 ms | 0.027–0.073 | 0.569 | **0.034 ms** |
+| Haris + Presidio | 12.553 ms | 8.708–16.308 | 22.211 | **12.546 ms** |
+
+Three repetitions, one warm-up scenario per family, 4,392 hops per arm. The median moved
+0.001 ms between repetitions structurally and 0.533 ms with Presidio.
+
+**Presidio costs roughly 370× the structural agents** and buys detection 76% → 90% and
+exfiltration prevention 73% → 76%. That is the trade, and it is the argument for shipping
+it: §5 shows the structural agents alone are brittle to rewording, and this is what
+robustness costs.
+
+**Why a floor arm.** A hop costs something with no agents at all — the orchestrator, the
+state store, the lineage write, an empty policy resolution. Reporting the whole wall-clock
+figure as "mediation cost" attributes that to Haris. The floor is 0.007 ms with a
+zero-width IQR, so it is negligible and the numbers really are about mediation.
+
+**Why the median.** The distribution is right-skewed. Structurally, p95 is 14× the median
+because a handful of hops pay a cold cache. A mean sits between the two and describes
+neither.
+
+### What this replaced, and a bug it exposed
+
+The runner reports latency as a by-product of the correctness run: no denominator, a
+warm-up of five scenarios drawn from a single family, one repetition, reported as a mean.
+Numbers from that path — 0.06 ms, 0.07 ms, and 8.98–11.1 ms with Presidio — should not be
+quoted.
+
+Running the proper harness first produced **302 ms per hop** with an IQR of 11–311, which
+is not a distribution but two of them. The cause was a real defect (issue #21):
+`build_agents` runs per scenario, and both `SecretsPIIAgent` and `InformationFlowAgent`
+were constructing their own `PIIDetector`, each lazily loading a spaCy pipeline — 1,152
+model loads across a run.
+
+Measured directly: **the first `analyze()` call on a fresh detector takes 1686 ms; the
+twenty after it average 4.4 ms.** So every Presidio latency figure this project had ever
+produced was measuring model initialisation amortised over a handful of hops, including
+the ~11 ms on the deck. The harness was hiding it in an average; the proper measurement
+surfaced it because a per-family warm-up made the ratio of cold to warm hops visible.
+
+One detector is now shared per process, which is what a deployment does. Golden rates are
+unchanged, confirming the detector carries no cross-scenario state.
 
 ## 5. Presidio ON — the shipped configuration
 
@@ -210,11 +264,17 @@ prevention. Detection is scoped to the scenario's LAST hop while prevention scor
 whole scenario, so a violation caught earlier reads as prevented-but-undetected. The two
 columns answer different questions and are not comparable per family.
 
-**Known inconsistency in the snapshot.** `presidio_on.json` records
-`"leak_prevention_rate": 0.875`, which is the VERDICT-based figure — `simulate.py`'s schema
-predates the exfiltration/boundary split (task I5). Anything quoting the JSON gets 87.5%
-where the runner gets 76% and 100% from the same run. **Quote the runner.** The schema
-should be updated before the JSON is cited anywhere.
+**Snapshot schema.** `presidio_on.json` and `presidio_off.json` now emit
+`exfiltration_prevented` and `boundary_crossings_caught`, matching `runner.py` exactly. The
+old `leak_prevention_rate` field reported 87.5% from the same run where the runner printed
+76% and 100% — it counted verdicts rather than outcomes and pooled the two claims. It
+survives as `leak_prevention_rate_verdict_based`, named so nobody mistakes it for the
+headline and so an older snapshot does not silently change meaning.
+
+**Presidio-ON latency is measured properly in §4b:** 12.553 ms median against a 0.007 ms
+floor, IQR 8.7–16.3. The 8.98–9.46 ms figures elsewhere in the runner output come from the
+by-product path and are artefacts of repeated model loading — see §4b. The deck's "~11 ms"
+turns out to be close to right, but it was right by accident; quote 12.55 ms with the CPU.
 
 ## 6. Known defects in these numbers
 

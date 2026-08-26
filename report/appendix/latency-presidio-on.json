@@ -1,0 +1,40 @@
+{
+  "machine": {
+    "cpu": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.4"
+  },
+  "repetitions": 3,
+  "presidio": true,
+  "arms": {
+    "no agents (floor)": {
+      "median_ms": 0.007,
+      "iqr_ms": [
+        0.007,
+        0.007
+      ],
+      "p95_ms": 0.008,
+      "hops": 4392,
+      "per_repetition_median_ms": [
+        0.007,
+        0.007,
+        0.007
+      ]
+    },
+    "Haris + Presidio": {
+      "median_ms": 12.5525,
+      "iqr_ms": [
+        8.7082,
+        16.3075
+      ],
+      "p95_ms": 22.211,
+      "hops": 4392,
+      "per_repetition_median_ms": [
+        12.7325,
+        12.2,
+        12.5985
+      ]
+    }
+  }
+}

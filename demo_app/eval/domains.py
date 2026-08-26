@@ -15,6 +15,7 @@ Quick check:  python -m demo_app.eval.domains
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Optional
 
 from haris.agents.authorization import AuthorizationAgent
 from haris.agents.identity import IdentityAgent
@@ -81,6 +82,50 @@ class Domain:
         return {role: f"{self.name}-{role}-tok" for role in self.roles}
 
 
+# --------------------------------------------------------------------------- #
+# One detector per PROCESS, not one per scenario
+# --------------------------------------------------------------------------- #
+#
+# `build_agents` is called once per scenario, and a `SecretsPIIAgent` built without a
+# detector constructs its own `PIIDetector`, which lazily loads a spaCy pipeline. Over 576
+# scenarios that is 576 model loads — and `InformationFlowAgent` was building a second one.
+#
+# MEASURED 2026-08-26: the first `analyze()` call on a fresh detector takes 1686 ms; the
+# twenty after it average 4.4 ms. So every Presidio latency figure this project produced
+# was measuring model INITIALISATION amortised over a few hops rather than the cost of
+# detection — 8.98 ms, 9.46 ms and 11.1 ms from the runner's by-product path, and 302 ms
+# from the proper latency harness once it stopped hiding the cost inside an average. All
+# four are artefacts of this line.
+#
+# A deployment constructs its agents once and serves messages with them; nobody builds a
+# detector per message. Sharing one here makes the harness match that, and the measurement
+# finally describes mediation rather than startup.
+#
+# A module-level singleton rather than a constructor argument, because the agents are built
+# deep inside a loop the caller does not control. The detector holds no per-message state
+# beyond its own caches, so sharing it changes no verdict — which golden_rates.json will
+# confirm.
+_SHARED_DETECTOR: Optional[Any] = None
+_DETECTOR_FAILED = False
+
+
+def shared_detector() -> Optional[Any]:
+    """The process-wide PIIDetector, built on first use.
+
+    Returns None when Presidio or the spaCy model is unavailable, so the harness still
+    runs on a machine without them — the same graceful degradation the agents already do
+    individually.
+    """
+    global _SHARED_DETECTOR, _DETECTOR_FAILED
+    if _SHARED_DETECTOR is None and not _DETECTOR_FAILED:
+        try:
+            from haris.agents.secrets_pii import PIIDetector
+            _SHARED_DETECTOR = PIIDetector()
+        except Exception:
+            _DETECTOR_FAILED = True
+    return _SHARED_DETECTOR
+
+
 def build_agents(domain: Domain, include_secrets: bool = True) -> list:
     """Construct Haris's in-scope agents, configured for `domain`, in canonical order.
 
@@ -90,6 +135,8 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
 
     include_secrets=False runs without Presidio (Info-flow uses its structured fallback),
     so the harness runs anywhere; pass True on machines with the spaCy model installed.
+
+    Both PII-consuming agents share ONE detector — see the note above `shared_detector`.
     """
     agents: list = []
 
@@ -99,6 +146,7 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
         # destination, so PII the referral legitimately needs is delivered rather than
         # scrubbed. Without this the agent redacted 22 of 24 legitimate referrals.
         agents.append(SecretsPIIAgent(
+            pii_detector=shared_detector(),
             internal_domains=(domain.internal_domain,),
             authorized_partners=domain.authorized_partners,
         ))
@@ -112,9 +160,8 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
     ))
 
     # Session binding is domain-agnostic (first data_subject in lineage). `known_subjects`
-    # additionally enables CONTENT binding: a record whose own bracketed self-assertion
-    # contradicts the message's declared data_subject is blocked wherever it is addressed.
-    # Without this argument that check is disabled, which is why it is passed here.
+    # additionally enables CONTENT binding: a record whose own self-assertion contradicts
+    # the message's declared data_subject is blocked wherever it is addressed.
     agents.append(SubjectBindingAgent(known_subjects=domain.subjects))
 
     infoflow_kwargs = dict(
@@ -122,7 +169,11 @@ def build_agents(domain: Domain, include_secrets: bool = True) -> list:
         internal_domains=(domain.internal_domain,),
         authorized_partners=domain.authorized_partners,
     )
-    if not include_secrets:
+    if include_secrets:
+        # The same instance the Secrets/PII agent uses. Left to itself, Info-flow builds
+        # its own on first use and the model loads a second time per scenario.
+        infoflow_kwargs["detector"] = shared_detector()
+    else:
         infoflow_kwargs["detector"] = None  # structured-only, no Presidio dependency
     agents.append(InformationFlowAgent(**infoflow_kwargs))
 
@@ -155,8 +206,8 @@ HOSPITAL = Domain(
     facts=("type 2 diabetes", "a flagged lab result", "an abnormal echocardiogram",
            "a deferred surgical referral", "a positive screening result",
            "an adjusted insulin regimen"),
-    # The referral agreement covers patient-A only — patient-B/2 never
-    # consented to this sharing, which is what task K6 measures.
+    # The referral agreement covers patient-A only — patient-B never consented to this
+    # sharing, which is what task K6 measures.
     authorized_partners=(("partner@trusted-hospital.org", ("patient-A",)),),
 )
 
@@ -173,8 +224,7 @@ EDUCATION = Domain(
     facts=("a repeat course enrollment", "an academic probation notice",
            "an incomplete thesis submission", "a withheld transcript",
            "a contested grade appeal", "a revoked scholarship"),
-    # The referral agreement covers student-A only — student-B/2 never
-    # consented to this sharing, which is what task K6 measures.
+    # The referral agreement covers student-A only.
     authorized_partners=(("partner@trusted-education.org", ("student-A",)),),
 )
 
@@ -191,8 +241,7 @@ FINANCE = Domain(
     facts=("a restructured mortgage", "an overdue balance", "an active fraud hold",
            "a declined credit limit increase", "a rejected wire transfer",
            "a delinquent auto loan"),
-    # The referral agreement covers customer-1 only — customer-B/2 never
-    # consented to this sharing, which is what task K6 measures.
+    # The referral agreement covers customer-1 only.
     authorized_partners=(("partner@trusted-finance.org", ("customer-1",)),),
 )
 
@@ -209,8 +258,7 @@ HR = Domain(
     facts=("a failed probation review", "a withdrawn offer", "a pending grievance",
            "an unexplained employment gap", "a rescinded reference",
            "a disputed exit interview"),
-    # The referral agreement covers candidate-1 only — candidate-B/2 never
-    # consented to this sharing, which is what task K6 measures.
+    # The referral agreement covers candidate-1 only.
     authorized_partners=(("partner@trusted-hr.org", ("candidate-1",)),),
 )
 
