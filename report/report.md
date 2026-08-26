@@ -416,6 +416,40 @@ off that parser is the only source of taint tags. We widened the parser rather t
 the limitation, rotated all five formats through every family, and kept the controlled probe as
 a regression guard.
 
+#### 6.4.5 A documented improvement, and what it did not fix
+
+    python -m demo_app.eval.matcher_delta
+
+The information-flow agent originally decided that a tag had resurfaced with an exact
+substring test. On 22 August it was replaced by a normalised comparison: both sides
+lower-cased, separators collapsed, and a token pass that respects word boundaries. The change
+is reproducible side by side — `matcher_delta` restores the old rule and re-runs the whole
+corpus.
+
+| family | prevention, exact substring | prevention, normalised |
+|---|---|---|
+| `external_obfuscated` | 0% | **33%** |
+| `rewrite_chain` | 50% | **67%** |
+| every other family | unchanged | unchanged |
+| false positives | 24/192 (12%) | 24/192 (12%) |
+
+**Report both halves.** Recall rises on the two families that reformat an identifier, and the
+false-positive rate does not move at all. A matcher can always be made to catch more by making
+it less discriminating; the flat false-positive column is the evidence that this one was not.
+
+**And report what it did not fix, because an earlier version of this document got that wrong.**
+This improvement was previously written up as taking obfuscated leaks from 42% to 100%, and
+presented as closing a difficulty tier. Both parts were mistaken. The 42% came from a family
+that contained a *single* transform — a hyphen replaced by a spaced hyphen — which normalisation
+closes completely; a "difficulty" axis whose value moves when you fix a bug in the detector was
+measuring the detector rather than the attack. Once that family was rebuilt as the six-rung
+ladder in §6.4.4, the same fix reads 0% → 33%: it recovers the two layout rungs and leaves
+every encoding rung untouched, which is the honest shape of what a normalising matcher can do.
+
+The second family in the table was not known to benefit until this was re-run on the current
+corpus. `rewrite_chain` did not exist when the fix was made, and the reformatted-identifier
+level of its degradation chain is recovered by the same normalisation.
+
 ### 6.5 Latency
 
     python -m demo_app.eval.latency              # structural agents
