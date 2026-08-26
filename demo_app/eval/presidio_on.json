@@ -1,13 +1,13 @@
 {
-  "scenarios": 432,
-  "attacks": 264,
-  "benign": 168,
-  "detection_rate": 0.8485,
-  "leak_prevention_rate": 0.7576,
-  "false_positive_rate": 0.1429,
-  "utility_rate": 0.8571,
-  "latency_avg_ms": 8.8546,
-  "latency_p95_ms": 11.712,
+  "scenarios": 576,
+  "attacks": 384,
+  "benign": 192,
+  "detection_rate": 0.901,
+  "leak_prevention_rate": 0.875,
+  "false_positive_rate": 0.125,
+  "utility_rate": 0.875,
+  "latency_avg_ms": 9.4593,
+  "latency_p95_ms": 15.041,
   "by_leak_style": {
     "verbatim": {
       "n": 48,
@@ -16,15 +16,15 @@
       "false_positive": null
     },
     "derived": {
-      "n": 168,
-      "detection": 1.0,
-      "prevention": 1.0,
-      "false_positive": 0.25
+      "n": 264,
+      "detection": 0.9427,
+      "prevention": 0.9896,
+      "false_positive": 0.3333
     },
     "paraphrase": {
       "n": 24,
-      "detection": 0.0,
-      "prevention": 0.0,
+      "detection": 0.75,
+      "prevention": 0.75,
       "false_positive": null
     },
     "obfuscated": {
@@ -40,56 +40,56 @@
       "false_positive": null
     },
     "none": {
-      "n": 144,
-      "detection": 1.0,
+      "n": 192,
+      "detection": 0.9306,
       "prevention": 0.6667,
       "false_positive": 0.0
     }
   },
   "by_domain": {
     "hospital": {
-      "n": 108,
-      "detection": 0.8485,
-      "prevention": 0.7576,
-      "false_positive": 0.1429
+      "n": 144,
+      "detection": 0.875,
+      "prevention": 0.875,
+      "false_positive": 0.125
     },
     "education": {
-      "n": 108,
-      "detection": 0.8485,
-      "prevention": 0.7576,
-      "false_positive": 0.1429
+      "n": 144,
+      "detection": 0.875,
+      "prevention": 0.8646,
+      "false_positive": 0.125
     },
     "finance": {
-      "n": 108,
-      "detection": 0.8485,
-      "prevention": 0.7576,
-      "false_positive": 0.1429
+      "n": 144,
+      "detection": 0.9271,
+      "prevention": 0.8854,
+      "false_positive": 0.125
     },
     "hr": {
-      "n": 108,
-      "detection": 0.8485,
-      "prevention": 0.7576,
-      "false_positive": 0.1429
+      "n": 144,
+      "detection": 0.9271,
+      "prevention": 0.875,
+      "false_positive": 0.125
     }
   },
   "by_topology": {
     "chain": {
-      "n": 144,
-      "detection": 0.9091,
-      "prevention": 0.8182,
-      "false_positive": 0.1429
+      "n": 192,
+      "detection": 0.9297,
+      "prevention": 0.9062,
+      "false_positive": 0.125
     },
     "star": {
-      "n": 144,
-      "detection": 0.8182,
-      "prevention": 0.7273,
-      "false_positive": 0.1429
+      "n": 192,
+      "detection": 0.8906,
+      "prevention": 0.8594,
+      "false_positive": 0.125
     },
     "branch": {
-      "n": 144,
-      "detection": 0.8182,
-      "prevention": 0.7273,
-      "false_positive": 0.1429
+      "n": 192,
+      "detection": 0.8828,
+      "prevention": 0.8594,
+      "false_positive": 0.125
     }
   },
   "by_difficulty": {
@@ -101,8 +101,8 @@
     },
     "hard": {
       "n": 24,
-      "detection": 0.0,
-      "prevention": 0.0,
+      "detection": 0.75,
+      "prevention": 0.75,
       "false_positive": null
     },
     "medium": {
@@ -127,8 +127,8 @@
     },
     "external_paraphrase": {
       "n": 24,
-      "detection": 0.0,
-      "prevention": 0.0,
+      "detection": 0.75,
+      "prevention": 0.75,
       "false_positive": null
     },
     "external_obfuscated": {
@@ -211,7 +211,7 @@
     },
     "forged_session_scope": {
       "n": 24,
-      "detection": 1.0,
+      "detection": 0.7917,
       "prevention": 0.0,
       "false_positive": null
     },
@@ -220,6 +220,42 @@
       "detection": null,
       "prevention": null,
       "false_positive": 1.0
+    },
+    "public_reference": {
+      "n": 24,
+      "detection": null,
+      "prevention": null,
+      "false_positive": 0.0
+    },
+    "deep_chain": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "rewrite_chain": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "stored_then_forwarded": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
+    },
+    "split_identifier": {
+      "n": 24,
+      "detection": 0.5417,
+      "prevention": 0.9167,
+      "false_positive": null
+    },
+    "record_format": {
+      "n": 24,
+      "detection": 1.0,
+      "prevention": 1.0,
+      "false_positive": null
     }
   }
 }

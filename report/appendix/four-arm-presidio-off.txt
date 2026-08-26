@@ -1,0 +1,85 @@
+FOUR-ARM COMPARISON
+  576 scenarios · 384 attacks · 192 benign
+  prevention denominator: 312 scenarios that actually leak untouched
+  every arm scored by the same rule: in what that arm delivered, did an
+  injected identifier reach an unauthorised recipient, or did one subject's
+  record surface in a message declared about another?
+
+  95% bootstrap CI in brackets (task M4). The arms share a corpus, so the
+  DIFFERENCES between them are better evidence than any single rate.
+  Exfiltration and boundary crossings are reported apart (task I5): the first
+  is data leaving the trust boundary, the second is one patient's record
+  reaching the wrong workflow with nothing leaving at all.
+
+  arm                     exfiltration (n=264)       boundary (n=48)           false pos   ms/hop
+  no defence                          0% [0-1]              0% [0-6]            0% [0-2]     0.00
+  content scanner                  72% [66-77]              0% [0-6]          12% [8-17]     0.74
+  metadata heuristic             100% [99-100]              0% [0-6]         25% [19-31]     0.00
+  Haris                            73% [67-78]         100% [94-100]          12% [8-17]     0.20
+
+  no defence           delivers everything — the denominator
+  content scanner      per-message, egress only, no session state
+  metadata heuristic   recipient + token + one subject; never reads content
+  Haris                lineage-aware mediation, ENFORCE
+
+PREVENTION BY FAMILY  (attack families only; n = scenarios that leak untouched)
+  family                     n              none           scanner          metadata             haris
+  deep_chain                24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  external_credential       24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  external_derived          24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  external_obfuscated       24         0% [0-12]        25% [8-42]     100% [88-100]       33% [17-54]
+  external_paraphrase       24         0% [0-12]         0% [0-12]     100% [88-100]         0% [0-12]
+  external_verbatim         24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  forged_session_scope       0                 —                 —                 —                 —
+  partner_scope_violation   24         0% [0-12]         0% [0-12]         0% [0-12]     100% [88-100]
+  policy_egress             24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  record_format             24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  rewrite_chain             24         0% [0-12]       67% [46-83]     100% [88-100]       67% [46-83]
+  split_identifier          24         0% [0-12]         0% [0-12]     100% [88-100]         0% [0-12]
+  spoof                      0                 —                 —                 —                 —
+  stored_then_forwarded     24         0% [0-12]     100% [88-100]     100% [88-100]     100% [88-100]
+  subject_forgery           24         0% [0-12]         0% [0-12]         0% [0-12]     100% [88-100]
+  subject_mismatch           0                 —                 —                 —                 —
+  Every per-family n is 24 or fewer, so read the COLUMNS against each other
+  rather than any cell on its own: an arm at 0% and an arm at 100% on the same
+  24 scenarios differ regardless of how wide either interval is.
+
+OBFUSCATION LADDER  (prevention per rung, all arms)
+  rung                       n              none           scanner          metadata             haris
+  1_spacing                  4         0% [0-75]     100% [25-100]     100% [25-100]     100% [25-100]
+  2_digit_spacing            4         0% [0-75]         0% [0-75]     100% [25-100]     100% [25-100]
+  3_reordered                4         0% [0-75]       50% [0-100]     100% [25-100]         0% [0-75]
+  4_homoglyph                4         0% [0-75]         0% [0-75]     100% [25-100]         0% [0-75]
+  5_html_entity              4         0% [0-75]         0% [0-75]     100% [25-100]         0% [0-75]
+  6_base64                   4         0% [0-75]         0% [0-75]     100% [25-100]         0% [0-75]
+  n=4 per rung: the intervals are far too wide to quote as rates. What the
+  ladder shows is the ORDER — layout changes recovered by normalisation,
+  encodings not — and that the metadata arm is flat across all six because
+  it never opens the payload.
+
+FALSE POSITIVES BY FAMILY  (benign families only)
+  family                     n              none           scanner          metadata             haris
+  authorized_external       24         0% [0-12]         0% [0-12]         0% [0-12]         0% [0-12]
+  internal_clean            24         0% [0-12]         0% [0-12]         0% [0-12]         0% [0-12]
+  internal_derived          24         0% [0-12]         0% [0-12]         0% [0-12]         0% [0-12]
+  internal_handoff          24         0% [0-12]         0% [0-12]         0% [0-12]     100% [88-100]
+  multi_subject_workflow    24         0% [0-12]         0% [0-12]     100% [88-100]         0% [0-12]
+  near_miss_benign          24         0% [0-12]     100% [88-100]     100% [88-100]         0% [0-12]
+  public_reference          24         0% [0-12]         0% [0-12]         0% [0-12]         0% [0-12]
+  same_subject              24         0% [0-12]         0% [0-12]         0% [0-12]         0% [0-12]
+
+  The boundary column is where the arms separate: both baselines score 0%
+  there and Haris 100%, because subject_forgery and partner_scope_violation
+  have faultless metadata and nothing leaves the system to inspect.
+
+READ THIS BEFORE QUOTING THE TABLE
+  * Arm B has no name detection: Presidio is Haris's own detector, so lending
+    it to the baseline would make the comparison circular. Arm B therefore
+    cannot see a bare personal name. This limitation favours Haris — say so.
+  * Arm B inspects egress messages only. Scanning internal hops as well would
+    flag the legitimate source read in every scenario; egress-only is the
+    charitable reading and the one a real DLP deployment uses.
+  * Arm C never reads content and was not tuned against this corpus.
+  * Wherever arm C matches or beats Haris, the thesis is unproven ON THIS
+    CORPUS. That is a statement about the corpus, and it is what task K exists
+    to fix — not a number to quietly drop from the report.

@@ -1,0 +1,115 @@
+scenarios: 576  (attacks 384 · benign 192)
+
+CORPUS  (measured by outcome, not by any detector's verdict)
+  attack scenarios                    : 384
+  ...EXFILTRATION: reach an outside address with an identifier
+                                      : 264
+  ...BOUNDARY CROSSINGS: wrong subject, or outside a partner's agreement,
+     with nothing leaving the system  : 48
+  ...no leak path at all              : 72  (policy violations that carry nothing to leak)
+  A secret 'leaks' when content reaching an unauthorised recipient still
+  carries an injected identifier, when one subject's record surfaces in a
+  message declared about another, or when it reaches a partner whose
+  agreement does not cover that subject. Same rule scores every arm.
+
+HEADLINE  (95% bootstrap CI in brackets — task M4; a rate without one hides
+           whether it rests on 168 observations or on four)
+  exfiltration prevented   : 73% [67-78]  (n=264) — an identifier reached an outside address
+  boundary crossings caught: 100% [94-100]  (n=48) — wrong subject or outside an agreement, no egress
+  ...combined              : 77% [72-81]  (n=312)  <- quote the two above, not this
+  detection                : 76% [72-80]  (monitor arm)
+  false positive           : 12% [8-17]  (24/192 benign wrongly stopped)
+  utility                  : 88%  (benign traffic delivered unharmed)
+  (verdict-based           : 292/384 stopped -> 76%  — counts scenarios with nothing to leak)
+  latency/hop              : 0.07 ms avg · 0.20 ms p95
+
+BY LEAK STYLE  (paraphrase carries no identifier — see the corpus note)
+  credential           detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  derived              detect=85% [80-90]      prevent=85% [80-90]      fp=33% [22-44]      (n=264)
+  none                 detect=67% [56-78]      prevent=67% [56-78]      fp=0% [0-2]         (n=192)
+  obfuscated           detect=33% [17-54]      prevent=33% [17-54]      fp=—                (n=24)
+  paraphrase           detect=0% [0-12]        prevent=0% [0-12]        fp=—                (n=24)
+  verbatim             detect=100% [94-100]    prevent=100% [94-100]    fp=—                (n=48)
+
+BY DOMAIN  (consistency = generalization)
+  education            detect=76% [68-84]      prevent=76% [68-84]      fp=12% [4-23]       (n=144)
+  finance              detect=76% [68-84]      prevent=76% [68-84]      fp=12% [4-23]       (n=144)
+  hospital             detect=76% [68-84]      prevent=76% [68-84]      fp=12% [4-23]       (n=144)
+  hr                   detect=76% [68-84]      prevent=76% [68-84]      fp=12% [4-23]       (n=144)
+
+BY TOPOLOGY  (near-flat by design: Haris judges each hop independently)
+  branch               detect=72% [64-80]      prevent=72% [64-80]      fp=12% [5-22]       (n=192)
+  chain                detect=81% [74-88]      prevent=81% [74-88]      fp=12% [5-22]       (n=192)
+  star                 detect=75% [67-82]      prevent=75% [67-82]      fp=12% [5-22]       (n=192)
+
+BY DIFFICULTY  (easy/medium are real; the 'hard' rung is not yet a genuine leak — task M3)
+  easy     detect=100% [94-100]    prevent=100% [94-100]    (n=48)
+  medium   detect=33% [17-54]      prevent=33% [17-54]      (n=24)
+  hard     detect=0% [0-12]        prevent=0% [0-12]        (n=24)
+
+BY OBFUSCATION RUNG  (easy -> hard; layout changes, then encodings)
+  1_spacing          prevent=100% [25-100]    leaked=0   (n=4) ##########  (!)
+  2_digit_spacing    prevent=100% [25-100]    leaked=0   (n=4) ##########  (!)
+  3_reordered        prevent=0% [0-75]        leaked=4   (n=4) .  (!)
+  4_homoglyph        prevent=0% [0-75]        leaked=4   (n=4) .  (!)
+  5_html_entity      prevent=0% [0-75]        leaked=4   (n=4) .  (!)
+  6_base64           prevent=0% [0-75]        leaked=4   (n=4) .  (!)
+  (!) 6 of 6 rungs have an interval too wide to quote as a
+      rate. Report the SHAPE of this curve — layout changes recovered,
+      encodings not — and treat the percentages as indicative only.
+
+BY CHAIN DEPTH  (identifier read at hop 1, resurfaces at the last hop)
+    hops           prevented    ms/hop   ms/session
+       2       100% [50-100]     0.109        0.218
+       4       100% [50-100]     0.084        0.337
+       6       100% [50-100]     0.068        0.408
+       8       100% [50-100]     0.061        0.488
+  If ms/hop climbs with depth, the cost of remembering is superlinear in
+  session length and belongs in §8 as a scaling limit; if it is flat, the
+  history replay is not the bottleneck it looks like.
+
+BY REWRITE LEVEL  (the record degrades as it is passed along)
+  1_restated           prevent=100% [25-100]    (n=4) ##########
+  2_reformatted        prevent=100% [25-100]    (n=4) ##########
+  3_reordered          prevent=100% [25-100]    (n=4) ##########
+  4_padded             prevent=100% [25-100]    (n=4) ##########
+  5_prefix_dropped     prevent=100% [25-100]    (n=4) ##########
+  6_initials           prevent=0% [0-75]        (n=4) .
+  Distinct from the obfuscation ladder: that transforms one identifier's
+  encoding in a single step, this degrades the content cumulatively across
+  hops. They fail for different reasons and are reported apart.
+
+BY RECORD FORMAT  (same leak, four source shapes)
+  1_structured       prevent=100% [40-100]    (n=5) ##########
+  2_json             prevent=100% [40-100]    (n=5) ##########
+  3_narrative        prevent=100% [40-100]    (n=5) ##########
+  4_chat             prevent=100% [40-100]    (n=5) ##########
+  5_email            prevent=100% [25-100]    (n=4) ##########
+  Every other family in the corpus uses the structured shape, so the
+  headline rates are conditioned on it. Quote this table beside them.
+
+BY FAMILY
+  authorized_external  detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  deep_chain           detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  external_credential  detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  external_derived     detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  external_obfuscated  detect=33% [17-54]      prevent=33% [17-54]      fp=—                (n=24)
+  external_paraphrase  detect=0% [0-12]        prevent=0% [0-12]        fp=—                (n=24)
+  external_verbatim    detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  forged_session_scope detect=0% [0-12]        prevent=0% [0-12]        fp=—                (n=24)
+  internal_clean       detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  internal_derived     detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  internal_handoff     detect=—                prevent=—                fp=100% [88-100]    (n=24)
+  multi_subject_workflow detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  near_miss_benign     detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  partner_scope_violation detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  policy_egress        detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  public_reference     detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  record_format        detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  rewrite_chain        detect=83% [67-96]      prevent=83% [67-96]      fp=—                (n=24)
+  same_subject         detect=—                prevent=—                fp=0% [0-12]        (n=24)
+  split_identifier     detect=0% [0-12]        prevent=0% [0-12]        fp=—                (n=24)
+  spoof                detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  stored_then_forwarded detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  subject_forgery      detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
+  subject_mismatch     detect=100% [88-100]    prevent=100% [88-100]    fp=—                (n=24)
