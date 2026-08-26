@@ -419,6 +419,91 @@ def fig_latency(off: dict, on: Optional[dict]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Figure 5 — the taint-normalisation fix, before and after
+# --------------------------------------------------------------------------- #
+
+def fig_matcher_delta(before: dict, after: dict, fp_before: str, fp_after: str) -> str:
+    """The one improvement this project can show as a controlled before/after.
+
+    The info-flow agent decided a tag had resurfaced with an exact substring test until
+    22 August; it now normalises both sides and respects word boundaries. `matcher_delta`
+    restores the old rule and re-runs the entire corpus, so the two columns differ in one
+    line of behaviour and nothing else.
+
+    BOTH HALVES ARE DRAWN ON PURPOSE. Recall rises on the two families that reformat an
+    identifier, and the false-positive rate does not move. A matcher can always be made to
+    catch more by making it less discriminating; the flat false-positive pair is the
+    evidence that this one was not, and a chart showing only the gain would be the more
+    flattering and less honest figure.
+
+    The families that do not move are not drawn. Twenty-two flat pairs would bury the two
+    that matter, and the report states in §6.4.5 that everything else is unchanged.
+    """
+    fams = [k for k in before if before[k] != after[k]]
+    # 860 wide, not 720: the false-positive values sit to the right of the plot and were
+    # being clipped at the canvas edge.
+    c = Canvas(860, 420,
+               "Taint matching: exact substring vs normalised",
+               "prevention per family, same corpus, one line of behaviour changed")
+
+    top, bottom, left, right = 100, 300, 90, 620
+    _y_axis(c, top, bottom, left, right)
+
+    gw = (right - left) / max(len(fams), 1)
+    bw = 62.0
+    for gi, fam in enumerate(fams):
+        gx = left + gi * gw
+        for bi, (label, table, colour) in enumerate((
+                ("before", before, MUTED), ("after", after, ARM_COLOURS["haris"]))):
+            x = gx + (gw - (2 * bw + 18)) / 2 + bi * (bw + 18)
+            rate = table[fam]
+            y = bottom - rate * (bottom - top)
+            if rate > 0:
+                c.rect(x, y, bw, bottom - y, colour)
+            else:
+                # A zero bar has no height and reads as a MISSING bar rather than a bar
+                # worth nothing — which matters here, since "caught nothing before the
+                # fix" is half the point of the figure. Draw the footprint instead.
+                c.line(x, bottom, x + bw, bottom, stroke=colour, width=3)
+            c.text(x + bw / 2, y - 9, f"{rate*100:.0f}%", size=10, anchor="middle")
+            c.text(x + bw / 2, bottom + 20, label, size=9, anchor="middle", fill=MUTED)
+        c.text(gx + gw / 2, bottom + 38, fam, size=10, anchor="middle")
+
+    # The false-positive pair, drawn beside the gains rather than mentioned underneath.
+    fx = right + 20
+    c.line(fx, top, fx, bottom + 10, stroke=GRID)
+    c.text(fx + 46, top - 12, "false positives", size=10, anchor="middle", fill=MUTED)
+    # Left-aligned on one x, so the two values line up and can be read as a pair. The
+    # earlier version staggered them horizontally, which made the eye compare positions
+    # instead of numbers.
+    for bi, (label, val) in enumerate((("before", fp_before), ("after", fp_after))):
+        y = top + 34 + bi * 20
+        c.text(fx + 14, y, f"{label}:", size=10, fill=MUTED)
+        c.text(fx + 62, y, val, size=10)
+    c.text(fx + 62, top + 74, "both 12%", size=10, fill=MUTED)
+    c.text(fx + 46, top + 100, "unchanged", size=11, anchor="middle",
+           fill=ARM_COLOURS["haris"], weight="600")
+
+    c.text(24, 356,
+           "Recall rises on the two families that reformat an identifier; the "
+           "false-positive rate does not move. That flat pair is",
+           size=9, fill=MUTED)
+    c.text(24, 370,
+           "what shows the gain was not bought by making the matcher indiscriminate. "
+           "Every other family is identical across the two arms.",
+           size=9, fill=MUTED)
+    c.text(24, 390,
+           "This fix was once reported as taking obfuscated leaks from 42% to 100%. That "
+           "family then held a single transform; rebuilt as the",
+           size=9, fill=MUTED)
+    c.text(24, 404,
+           "six-rung ladder in F3, the same fix recovers the layout rungs only — which is "
+           "the honest shape of what normalisation can do.",
+           size=9, fill=MUTED)
+    return c.render()
+
+
+# --------------------------------------------------------------------------- #
 
 def _load_latency(path: pathlib.Path) -> Optional[dict]:
     """Read a latency-*.json written by `demo_app.eval.latency`.
@@ -469,6 +554,16 @@ def main() -> None:
         "fig2-by-family.svg": fig_by_family(rows, ARMS, _prevention_ci),
         "fig3-obfuscation-ladder.svg": fig_ladder(rows, ARMS, _prevention_ci),
     }
+
+    # F5 restores the pre-normalisation matcher and re-runs the corpus. Measured
+    # 2026-08-26 on 576 scenarios; see §6.4.5. Held as literals here rather than re-run,
+    # because matcher_delta monkey-patches the agent and running it inside the figure
+    # build would leave the patched matcher in place for anything drawn afterwards.
+    figures["fig5-matcher-delta.svg"] = fig_matcher_delta(
+        before={"external_obfuscated": 0.0, "rewrite_chain": 0.50},
+        after={"external_obfuscated": 0.33, "rewrite_chain": 0.67},
+        fp_before="24/192", fp_after="24/192",
+    )
 
     off = _load_latency(pathlib.Path(args.latency_off))
     on = _load_latency(pathlib.Path(args.latency_on))
