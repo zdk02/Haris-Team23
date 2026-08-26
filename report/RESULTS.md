@@ -309,7 +309,12 @@ would have counted all four as successes.
 
 - Traffic we did not author. Seed invariance (seeds 23–27) shows the numbers are not an
   artefact of one draw; it says nothing about generalisation.
-- Presidio-ON under multiple seeds — NER recall varies with the names drawn, and finding
-  PA-3 (non-Anglo surnames recognised less reliably) is unquantified.
+- Presidio-ON seed sensitivity is now measured (`report/appendix/seed-sweep-presidio-on.txt`)
+  and is small but real: across seeds 23–25, prevention 79.2–81.1% (spread 1.9 points) and
+  detection 90.1–91.1% (1.0 point), while the false-positive rate does not move at all —
+  it is `internal_handoff`, a structural refusal Presidio never touches. So the variance
+  sits entirely on the detection side, which is what finding PA-3 predicts: NER recall
+  depends on which names were drawn. Three seeds is enough to show the variation exists
+  and not enough to bound it.
 - `forged_session_scope`: 24 measured misses. `session_scope` is sender-supplied, so an
   attacker writes their own. The remedy is binding it at the interception adapter.

@@ -515,7 +515,9 @@ and §6.5 should be read through the first one.
 family and every benign case came out of our own reasoning about how a multi-agent system
 leaks. Where our imagination stopped, the evaluation stops too, and no rate here can tell us
 what we failed to imagine. Two things narrow that gap slightly and neither closes it. The rates
-are invariant across seeds 23–27, so they are not an artefact of one random draw. And the
+are invariant across seeds 23–27 with the structural agents, and move only slightly with
+Presidio enabled — prevention 79.2–81.1% across three seeds, because named-entity recall
+depends on which names were drawn — so they are not an artefact of one random draw. And the
 comparison in §6.4.2 puts all four arms on the same corpus, so while the absolute numbers are
 conditioned on what we wrote, the *differences* between arms are not — a family we invented
 still separates lineage-aware mediation from a metadata rule, whether or not that family occurs
@@ -572,9 +574,9 @@ The pessimistic reading is that there may be a fourth. We hold both.
 message logs from a system we did not write; give the matcher a decoding pass so that base64,
 HTML entities and homoglyphs stop rendering as the original identifier to a human reviewer;
 bind `session_scope` and `recipient` at the interception adapter, which converts two of the
-limitations in §8 from open problems into deployment requirements; and repeat the Presidio
-configuration across several seeds, since named-entity recall varies with the names drawn and
-we have not quantified by how much.
+limitations in §8 from open problems into deployment requirements; and widen the seed sweep,
+since three seeds establish that named-entity recall varies with the names drawn without
+bounding how far it can vary.
 
 ## 7. Related work
 

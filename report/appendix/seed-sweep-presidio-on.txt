@@ -1,0 +1,21 @@
+Seed sensitivity — Presidio ON (the shipped configuration)
+seeds: [23, 24, 25]
+
+  A seed redraws every name, record id and credential. It does not change the
+  families, their counts, or the structure of any scenario — so this measures
+  sensitivity to the STRINGS, and nothing wider. It is not evidence that the
+  corpus generalises to real traffic.
+
+    seed    prevention     detection     false pos
+      23         79.8%         90.1%         12.5%
+      24         81.1%         91.1%         12.5%
+      25         79.2%         90.6%         12.5%
+
+  prevention       mean= 80.0%  range= 79.2– 81.1%  spread= 1.9 pts   stable
+  detection        mean= 90.6%  range= 90.1– 91.1%  spread= 1.0 pts   stable
+  false_positive   mean= 12.5%  range= 12.5– 12.5%  spread= 0.0 pts   invariant
+
+  The rates MOVE between seeds, so at least one detector's answer depends on
+  which names were drawn. Report the range rather than the seed-23 point,
+  and name the mechanism: with Presidio on, this is NER recall (finding
+  PA-3 — non-Anglo surnames are recognised less reliably).
