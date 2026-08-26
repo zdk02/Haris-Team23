@@ -238,7 +238,11 @@ unchanged, confirming the detector carries no cross-scenario state.
 | boundary crossings caught | 100% [94–100] | 100% [94–100] |
 | detection | 76% [72–80] | **90% [87–93]** |
 | false positives | 12% [8–17] | 12% [8–17] |
-| latency per hop | 0.07 ms | **9.46 ms** (p95 15.04) |
+| mediation cost per hop | 0.034 ms | **12.55 ms** — measured in §4b |
+
+Latency is the figure from §4b, not the one the runner prints. That by-product number has
+read 8.98, 9.46 and 11.60 ms across three runs of the same thing, because it has no floor
+arm, one repetition and a warm-up that covers a single family. §4b is the measurement.
 
 **This changes what §8 can claim, and in our favour.** Several results the OFF
 configuration reports as limits of the design are limits of the FALLBACK PARSER:
