@@ -508,50 +508,73 @@ state.
 
 ### 6.6 Threats to validity
 
-> **Zeinab: rewrite this in your own voice before submission.** The material below is
-> accurate and each item has evidence behind it, but this is the section where a reader
-> decides whether to trust the rest, and it reads differently when the doubts are plainly
-> the author's own. Keep the substance; make the sentences yours.
+We set these out in the order that matters, not the order that flatters. Every number in §6.4
+and §6.5 should be read through the first one.
 
-**The corpus is ours.** Every scenario was written by us, so every rate bounds performance on
-the threat classes we thought to model and says nothing about traffic we did not write. Seed
-invariance across seeds 23–27 shows the numbers are not an artefact of one random draw; it does
-not show they generalise. The strongest available improvement to this evaluation is benign
-traffic from a system we did not build, and we have not done it.
+**We wrote the corpus, so it bounds only the threats we thought of.** Every scenario, every
+family and every benign case came out of our own reasoning about how a multi-agent system
+leaks. Where our imagination stopped, the evaluation stops too, and no rate here can tell us
+what we failed to imagine. Two things narrow that gap slightly and neither closes it. The rates
+are invariant across seeds 23–27, so they are not an artefact of one random draw. And the
+comparison in §6.4.2 puts all four arms on the same corpus, so while the absolute numbers are
+conditioned on what we wrote, the *differences* between arms are not — a family we invented
+still separates lineage-aware mediation from a metadata rule, whether or not that family occurs
+in the wild. The single largest improvement available to this work is benign traffic from a
+system we did not build. We did not do it, and until someone does, "12% false positives" means
+12% on traffic of our own design.
 
-**The consistency check is not an adjudicator.** It re-derives labels from facts the generator
-wrote, so agreement with the generator establishes nothing. The mutation suite shows it can
-fail, and `detect-secrets` confirms a small credential-shaped subset from outside the project.
-Neither amounts to independent labelling of the corpus.
+**The consistency check confirms our labels; it does not adjudicate them.** `oracle.py` derives
+each label from the generated traffic, but the traffic and the labels come from the same
+generator, so on a corpus we built correctly it cannot disagree. We never call it independent.
+What it is good for is showing that the generated traffic actually realises the intended label,
+and the mutation suite shows it can fail — defuse one attack property and the label flips. The
+genuinely external confirmation is `detect-secrets`, and it covers only the credential-shaped
+subset: it has no opinion on a name, a record number or a diagnosis. That is a small honest
+number and we report it as one. One family, `forged_session_scope`, cannot be labelled from its
+traffic at all, because an attacker who writes a convincing session-scope declaration produces
+traffic identical to a legitimate one. We label it by construction and treat that as the
+finding rather than as a gap in the method.
 
-**Content diversity is bounded.** Five record formats and four phrasings per leak style is more
-than the single template the corpus began with, and it is not the variety of real traffic. The
-formats are shared across domains rather than authored per domain. The phrasing axis at least
-tells us the rates do not depend on our prose: four different sentences produced identical
-results.
+**Content diversity is bounded by what we authored.** Five record formats and four phrasings
+per leak style is a great deal more than the single template we started with, and it is not the
+variety of real traffic. The formats are shared across the four domains rather than written
+separately for each. We know the rates do not depend on our prose — four different phrasings of
+the same leak produce identical results — and we know they no longer depend on record shape,
+because widening the parser closed a gap where a narrative note and a chat transcript scored
+zero. What we do not know is how the system behaves on text no one on this team wrote.
 
-**The measured configuration is not exactly the deployed one.** The four-arm comparison runs
-with Presidio off for determinism; the dashboard runs with it on. We report both and they
-differ — most importantly, three limitations disappear with Presidio enabled. Where this report
-quotes a single figure it is the structural one, and it is labelled as such.
+**The configuration we measured most is not the one we deploy.** The four-arm comparison runs
+with Presidio off, because the comparison needs to be deterministic and dependency-free; the
+dashboard runs with Presidio on. We report both, and they differ in ways that matter: three
+results the structural configuration records as limitations — semantic paraphrase, the last
+level of the rewrite chain, and the split identifier — substantially improve with the detector
+enabled. Where this section quotes one figure it is the structural one, and it is labelled.
+Anyone comparing our headline against a deployed system should use §6.5.1.
 
-**Aggregate rates depend on the family mix.** We chose twenty-four families of equal size;
-weighting them differently would move every headline number without any code changing. The
-per-family breakdown is the result and the aggregate is a summary of it.
+**Aggregate rates are a function of the family mix we chose.** Twenty-four families of
+twenty-four scenarios is our decision, and weighting them differently would move every headline
+number without a line of code changing. This is why we present the per-family table as the
+result and the aggregate as a summary of it. For the same reason, every per-family n is 24 and
+every ladder rung is 4: we report confidence intervals throughout so that a per-rung percentage
+is not mistaken for a measurement, and we ask that the ladders be read as orderings rather than
+as values.
 
-**Small samples.** Every per-family n is 24 and every ladder rung is 4. The confidence intervals
-are reported precisely so that a per-rung percentage is not mistaken for a measurement; the
-ladders should be read as orderings.
+**We found three defects in our own metric, and we think that cuts both ways.** A clinical
+detail was being counted as an identifying value; record numbers were being split on the wrong
+character, which broke two of the four domains; and a pseudonymous session key was scored as a
+leaked identifier, which cost seven points of apparent prevention until we removed it. Each was
+found by constructing a case whose correct answer we knew independently, and none would have
+been caught by a passing test suite. The optimistic reading is that a measurement instrument
+which has caught three faults in itself has been tested harder than one that has caught none.
+The pessimistic reading is that there may be a fourth. We hold both.
 
-**What we found in our own metric, three times.** A clinical detail was being counted as an
-identifying value; record identifiers were split on the wrong hyphen, breaking two of four
-domains; and a pseudonymous session key was scored as a leaked identifier. Each was found by
-building a case whose right answer was known independently, and each would have been invisible
-to a passing test suite. We report this because it bears on how much weight the other numbers
-carry: an evaluation that has caught three defects in itself has been tested more than one that
-has caught none.
-
----
+**What we would do with more time**, in the order we would do it: run the evaluation over
+message logs from a system we did not write; give the matcher a decoding pass so that base64,
+HTML entities and homoglyphs stop rendering as the original identifier to a human reviewer;
+bind `session_scope` and `recipient` at the interception adapter, which converts two of the
+limitations in §8 from open problems into deployment requirements; and repeat the Presidio
+configuration across several seeds, since named-entity recall varies with the names drawn and
+we have not quantified by how much.
 
 ## 7. Related work
 
