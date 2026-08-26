@@ -9,8 +9,8 @@
   "detection_rate": 0.901,
   "false_positive_rate": 0.125,
   "utility_rate": 0.875,
-  "latency_avg_ms": 8.982,
-  "latency_p95_ms": 14.433,
+  "latency_avg_ms": 11.6028,
+  "latency_p95_ms": 19.067,
   "leak_prevention_rate_verdict_based": 0.875,
   "by_leak_style": {
     "verbatim": {

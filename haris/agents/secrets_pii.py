@@ -15,6 +15,12 @@ helpers that Module 9 (Information-flow) can reuse directly:
     precise regex/keyword plugins ourselves; the plugin list is constructor
     config, so entropy plugins can be opted into per deployment.)
 
+Severity combination (task #14, 2026-08-26). Findings are combined with a noisy-OR,
+`1 - Π(1 - sᵢ)`, so weak signals CORROBORATE: two 0.3 findings reach 0.51 where the
+previous `max()` left them at 0.3 forever. The docstring below has always claimed weak
+entities "matter in the company of strong ones"; until now the code did not implement it,
+and no quantity of weak evidence ever changed an answer.
+
 Severity mapping (the part that makes the policy engine's thresholds behave):
 Presidio happily reports DATE_TIME for phrases like "follow up in two weeks",
 which would false-positive every clean summary (TC1). So each entity type
@@ -100,10 +106,49 @@ DEFAULT_ENTITY_WEIGHTS: Mapping[str, float] = {
 
 DEFAULT_FLAG_THRESHOLD = 0.5   # min severity for the agent to flag
 DEFAULT_PII_MIN_SCORE = 0.4    # drop Presidio findings below this raw score
+
+# Entity types that FLAG AT EGRESS REGARDLESS OF SCORE.
+#
+# A government identifier or a payment instrument leaving the trust boundary is not a
+# judgement call to be weighed against a threshold. Measured 2026-08-26 with real
+# Presidio: "Patient SSN 221974444 attached", addressed to an external recipient, returned
+# PASS at severity 0.4 while naming US_SSN in its own explanation — a verdict contradicting
+# its own reason, which is worse than a miss because the audit log records the detection
+# next to the decision to allow it.
+#
+# These types are also exempt from `min_score`. `US_DRIVER_LICENSE` scores 0.3 from
+# Presidio's own recogniser and was being discarded before weighting ever ran, so no
+# threshold change could have rescued it.
+#
+# The floor applies AT EGRESS ONLY. Inside the trust boundary a record legitimately
+# contains these values — that is what a record is — and flagging them on every internal
+# hop would refuse the system's ordinary work.
+DEFAULT_FLOOR_ENTITIES: tuple[str, ...] = (
+    "US_SSN", "CREDIT_CARD", "IBAN_CODE", "MEDICAL_LICENSE", "US_DRIVER_LICENSE",
+)
 DEFAULT_SECRET_SCORE = 0.9     # regex/keyword plugin hits are near-certain
 DEFAULT_SECRET_MASK = "<SECRET>"
 DEFAULT_SPACY_MODEL = "en_core_web_sm"
 DEFAULT_LANGUAGE = "en"
+
+
+def _combine(severities) -> float:
+    """Combine finding severities so weak signals CORROBORATE.
+
+    The module docstring has said since it was written that weak entities "only matter in
+    the company of strong ones". `max()` did not implement that: the strongest finding
+    always decided alone, and no quantity of weak ones ever changed the answer. A date and
+    a location and a second date scored exactly as much as the single date.
+
+    Noisy-OR: `1 - Π(1 - sᵢ)`. Two findings at 0.3 combine to 0.51; three to 0.66. One
+    finding is unchanged, so nothing that flagged before stops flagging. It is bounded
+    above by 1.0 and is monotone, so adding evidence never lowers the score — which is the
+    property a security control needs and a mean does not have.
+    """
+    total = 0.0
+    for s in severities:
+        total = total + s - (total * s)
+    return min(1.0, total)
 
 
 @dataclass(frozen=True)
@@ -132,9 +177,15 @@ class PIIDetector:
         min_score: float = DEFAULT_PII_MIN_SCORE,
         spacy_model: str = DEFAULT_SPACY_MODEL,
         language: str = DEFAULT_LANGUAGE,
+        floor_entities: Iterable[str] = DEFAULT_FLOOR_ENTITIES,
     ) -> None:
         self.entities = list(entities)
         self.min_score = min_score
+        # Types the score gate does not apply to. Presidio's own recogniser scores
+        # US_DRIVER_LICENSE at 0.3, below the 0.4 default, so it was discarded here —
+        # before weighting, before thresholding, before anything downstream could rescue
+        # it. A government identifier is not something to drop for lack of confidence.
+        self.floor_entities = frozenset(floor_entities)
         self.spacy_model = spacy_model
         self.language = language
         self._analyzer = None
@@ -164,11 +215,17 @@ class PIIDetector:
     # -- API ---------------------------------------------------------------- #
 
     def analyze(self, text: str):
-        """Return Presidio RecognizerResults (entity, span, score) above min_score."""
+        """Return Presidio RecognizerResults (entity, span, score) above min_score.
+
+        Findings whose entity type is in `floor_entities` are kept whatever they scored:
+        the gate exists to suppress noise from weak types, and a government identifier or
+        a payment instrument is not noise at any confidence.
+        """
         self._ensure_engines()
         results = self._analyzer.analyze(
             text=text, entities=self.entities, language=self.language)
-        return [r for r in results if r.score >= self.min_score]
+        return [r for r in results
+                if r.score >= self.min_score or r.entity_type in self.floor_entities]
 
     def redact(self, text: str, results=None) -> str:
         """Mask detected spans: 'Jane Doe' -> '<PERSON>'. Reuses `results` if given."""
@@ -254,6 +311,7 @@ class SecretsPIIAgent(SecurityAgent):
         secrets_detector: Optional[SecretsDetector] = None,
         entity_weights: Mapping[str, float] = DEFAULT_ENTITY_WEIGHTS,
         flag_threshold: float = DEFAULT_FLAG_THRESHOLD,
+        floor_entities: Iterable[str] = DEFAULT_FLOOR_ENTITIES,
         secret_score: float = DEFAULT_SECRET_SCORE,
         secret_mask: str = DEFAULT_SECRET_MASK,
         *,
@@ -267,6 +325,7 @@ class SecretsPIIAgent(SecurityAgent):
         self.secrets = secrets_detector or SecretsDetector()
         self.entity_weights = dict(entity_weights)
         self.flag_threshold = flag_threshold
+        self.floor_entities = frozenset(floor_entities)
         self.secret_score = secret_score
         self.secret_mask = secret_mask
         # Boundary-awareness (mirrors AuthorizationAgent / InformationFlowAgent):
@@ -299,7 +358,31 @@ class SecretsPIIAgent(SecurityAgent):
         secret_hits = self.secrets.scan(text) if text else []
         findings = self._to_findings(pii_results, secret_hits)
 
-        severity = max((f.severity for f in findings), default=0.0)
+        severity = _combine(f.severity for f in findings)
+
+        # THE HARD FLOOR. A government identifier or a payment instrument on its way OUT
+        # of the trust boundary flags regardless of what it scored. Measured before this
+        # existed: "Patient SSN 221974444 attached", addressed externally, returned PASS
+        # at 0.4 while naming US_SSN in its own explanation — the verdict contradicting
+        # its own reason, recorded that way in the audit log.
+        #
+        # Egress only. Inside the boundary a record contains these values by definition,
+        # and flagging every internal hop would refuse the system's ordinary work; that is
+        # the same reasoning `redact_on_egress_only` already encodes.
+        floored = [f for f in findings
+                   if f.kind == "pii" and f.entity_type in self.floor_entities]
+        if floored and self._is_egress(message):
+            names = ", ".join(sorted({f.entity_type for f in floored}))
+            redacted = self.pii.redact(text, pii_results) if pii_results else text
+            if secret_hits:
+                redacted = SecretsDetector.redact(redacted, secret_hits, self.secret_mask)
+            return Verdict(
+                agent_name=self.name, label=Label.FLAG, score=max(severity, 1.0),
+                reason=(f"{names} leaving the trust boundary — flagged regardless of "
+                        f"score (combined severity was {severity:.2f})"),
+                redacted_content=redacted,
+            )
+
         if severity < self.flag_threshold:
             return self._pass(severity, findings)
 
