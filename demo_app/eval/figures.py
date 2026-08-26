@@ -30,6 +30,8 @@ THE FIGURES, AND WHAT EACH IS FOR.
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import pathlib
 from collections import defaultdict
 from typing import Optional, Sequence
@@ -111,43 +113,75 @@ def _y_axis(c: Canvas, top: float, bottom: float, left: float, right: float,
 # Figure 1 — the four-arm comparison
 # --------------------------------------------------------------------------- #
 
-def fig_four_arm(rows: list[dict], arms, prevention_ci, fp_ci) -> str:
-    c = Canvas(760, 420,
-               "Leak prevention and false positives, four arms, one corpus",
-               "432 scenarios · 95% bootstrap CI · same outcome-based rule scores every arm")
+def fig_four_arm(rows: list[dict], arms, exfil_ci, boundary_ci, fp_ci) -> str:
+    """The headline comparison, with the two prevention claims kept APART.
 
-    top, bottom, left, right = 90, 330, 70, 700
+    An earlier version drew a single "leak prevention" group. That is the number
+    report/RESULTS.md explicitly tells the reader not to quote: it pools data leaving the
+    trust boundary with one patient's record reaching the wrong workflow, and a sixth of
+    its denominator is the second. Worse, the two claims point in opposite directions —
+    the metadata heuristic wins the first and scores zero on the second — so a combined
+    bar hid the entire argument.
+
+    Every count in the subtitle is computed from `rows`. The previous version had "432
+    scenarios" as a literal, so it kept printing a stale figure after each regeneration —
+    a chart that looks fresh and is not, which is worse than one that is obviously old.
+    """
+    n_scen = len(rows)
+    n_ex = len([r for r in rows if r["label_attack"] and r["leak_unmediated"]
+                and r["egresses"]])
+    n_bd = len([r for r in rows if r["label_attack"] and r["leak_unmediated"]
+                and not r["egresses"]])
+    n_ben = len([r for r in rows if not r["label_attack"]])
+
+    c = Canvas(860, 440,
+               "Exfiltration, boundary crossings and false positives — four arms, one corpus",
+               f"{n_scen} scenarios · 95% bootstrap CI · same outcome-based rule scores "
+               f"every arm")
+
+    top, bottom, left, right = 95, 330, 70, 820
     _y_axis(c, top, bottom, left, right)
 
-    groups = [("leak prevention", prevention_ci), ("false positives", fp_ci)]
+    groups = [
+        (f"exfiltration (n={n_ex})", exfil_ci),
+        (f"boundary crossings (n={n_bd})", boundary_ci),
+        (f"false positives (n={n_ben})", fp_ci),
+    ]
     gw = (right - left) / len(groups)
-    bw = min(46.0, (gw - 60) / len(arms))
+    bw = min(34.0, (gw - 40) / len(arms))
 
     for gi, (gname, fn) in enumerate(groups):
         gx = left + gi * gw
-        c.text(gx + gw / 2, bottom + 34, gname, size=12, anchor="middle")
-        span = len(arms) * bw + (len(arms) - 1) * 10
+        c.text(gx + gw / 2, bottom + 34, gname, size=11, anchor="middle")
+        span = len(arms) * bw + (len(arms) - 1) * 8
         for ai, arm in enumerate(arms):
             ci = fn(rows, arm.key)
             if ci is None:
                 continue
-            x = gx + (gw - span) / 2 + ai * (bw + 10)
+            x = gx + (gw - span) / 2 + ai * (bw + 8)
             y = bottom - ci.rate * (bottom - top)
             c.rect(x, y, bw, bottom - y, ARM_COLOURS.get(arm.key, MUTED))
             c.whisker(x + bw / 2,
                       bottom - ci.low * (bottom - top),
                       bottom - ci.high * (bottom - top))
-            # Above the whisker cap, not the bar: at 71% the two collided.
             label_y = min(y, bottom - ci.high * (bottom - top)) - 9
-            c.text(x + bw / 2, label_y, f"{ci.rate*100:.0f}%", size=10, anchor="middle")
+            c.text(x + bw / 2, label_y, f"{ci.rate*100:.0f}%", size=9, anchor="middle")
 
     for ai, arm in enumerate(arms):
-        lx = 70 + ai * 170
-        c.rect(lx, 368, 11, 11, ARM_COLOURS.get(arm.key, MUTED))
-        c.text(lx + 17, 378, arm.label, size=10)
-    c.text(24, 404,
-           "Lower is better for false positives. Haris's 14% is one family "
-           "(internal_handoff) it refuses on purpose.",
+        lx = 70 + ai * 190
+        c.rect(lx, 372, 11, 11, ARM_COLOURS.get(arm.key, MUTED))
+        c.text(lx + 17, 382, arm.label, size=10)
+
+    haris_fp = fp_ci(rows, "haris")
+    heur_fp = fp_ci(rows, "metadata")
+    c.text(24, 408,
+           "The metadata heuristic wins on exfiltration — a rule that never reads content "
+           "cannot be defeated by rewriting content — and",
+           size=9, fill=MUTED)
+    c.text(24, 421,
+           f"scores zero on boundary crossings. Lower is better for false positives: "
+           f"{(haris_fp.rate*100 if haris_fp else 0):.0f}% against the heuristic's "
+           f"{(heur_fp.rate*100 if heur_fp else 0):.0f}%.",
            size=9, fill=MUTED)
     return c.render()
 
@@ -294,89 +328,134 @@ def fig_ladder(rows: list[dict], arms, prevention_ci) -> str:
 # Figure 4 — latency, both configurations
 # --------------------------------------------------------------------------- #
 
-def fig_latency(off_avg: float, off_p95: float,
-                on_avg: Optional[float], on_p95: Optional[float]) -> str:
-    c = Canvas(620, 360,
-               "Mediation cost per hop",
-               "Presidio adds detection, not enforcement — and two orders of magnitude")
+def fig_latency(off: dict, on: Optional[dict]) -> str:
+    """Mediation cost, from the dedicated latency harness (task O3).
 
-    bars = [("Presidio off\navg", off_avg), ("Presidio off\np95", off_p95)]
-    if on_avg is not None:
-        bars += [("Presidio on\navg", on_avg), ("Presidio on\np95", on_p95)]
+    WHAT THIS REPLACED. The earlier version read an average and a p95 out of the runner's
+    by-product timings. Those had no denominator, warmed five scenarios from one family,
+    and ran once — and the Presidio figures among them (8.98, 9.46, 11.1 ms) turned out to
+    be measuring spaCy model INITIALISATION, because both PII-consuming agents were
+    constructing their own detector per scenario. A cold `analyze()` costs 1686 ms against
+    4.4 ms warm.
 
-    top, bottom, left = 95, 275, 80
-    peak = max(v for _, v in bars) or 1.0
-    bw, gap = 70.0, 34.0
+    This reads `report/appendix/latency-presidio-{off,on}.json`: three repetitions, one
+    warm-up scenario per family, medians with interquartile range, and a no-agents floor
+    so the bar is mediation rather than wall clock.
+    """
+    def arm(d: dict, key_part: str) -> Optional[dict]:
+        for k, v in d.get("arms", {}).items():
+            if key_part in k.lower():
+                return v
+        return None
 
-    for pct in (0, 25, 50, 75, 100):
-        y = bottom - (pct / 100.0) * (bottom - top)
+    floor = arm(off, "floor")
+    struct = arm(off, "haris")
+    presidio = arm(on, "haris") if on else None
+
+    bars = [("no agents\n(floor)", floor), ("Haris\nstructural", struct)]
+    if presidio:
+        bars.append(("Haris +\nPresidio", presidio))
+    bars = [(lbl, d) for lbl, d in bars if d]
+
+    c = Canvas(700, 420, "Mediation cost per hop",
+               "median with interquartile range · 3 repetitions · warm-up per family · "
+               "LOG SCALE")
+
+    top, bottom, left = 105, 285, 95
+    bw, gap = 78.0, 52.0
+
+    # LOG SCALE, because the arms span three orders of magnitude: 0.007 ms, 0.041 ms and
+    # 12.553 ms. On a linear axis the two structural bars are sub-pixel slivers and the
+    # chart reads as one bar with three labels — the shape of the comparison disappears
+    # exactly where it is most interesting. The axis is labelled as logarithmic in the
+    # subtitle and on the gridlines, because a log scale that is not announced misleads
+    # more than a bad linear one.
+    lo_dec, hi_dec = -3, 2                       # 0.001 ms .. 100 ms
+    def y_of(ms: float) -> float:
+        v = max(ms, 10 ** lo_dec)
+        frac = (math.log10(v) - lo_dec) / (hi_dec - lo_dec)
+        return bottom - frac * (bottom - top)
+
+    for d in range(lo_dec, hi_dec + 1):
+        val = 10.0 ** d
+        y = y_of(val)
         c.line(left, y, left + len(bars) * (bw + gap), y)
-        c.text(left - 8, y + 4, f"{peak*pct/100:.1f}", size=10, fill=MUTED, anchor="end")
+        label = f"{val:g}" if val >= 1 else f"{val:.3f}".rstrip("0")
+        c.text(left - 8, y + 4, label, size=10, fill=MUTED, anchor="end")
     c.text(left - 8, top - 12, "ms", size=10, fill=MUTED, anchor="end")
 
-    for i, (label, val) in enumerate(bars):
+    for i, (label, d) in enumerate(bars):
         x = left + 20 + i * (bw + gap)
-        h = (val / peak) * (bottom - top)
-        colour = ARM_COLOURS["haris"] if "off" in label else ARM_COLOURS["metadata"]
-        c.rect(x, bottom - h, bw, h, colour)
-        c.text(x + bw / 2, bottom - h - 10, f"{val:.2f}", size=10, anchor="middle")
-        for j, part in enumerate(label.split("\n")):
-            c.text(x + bw / 2, bottom + 20 + j * 13, part, size=10,
+        y = y_of(d["median_ms"])
+        colour = ARM_COLOURS["haris"] if "Presidio" not in label else ARM_COLOURS["metadata"]
+        if "floor" in label:
+            colour = ARM_COLOURS["none"]
+        c.rect(x, y, bw, bottom - y, colour)
+        lo, hi = d["iqr_ms"]
+        if hi > lo:
+            c.whisker(x + bw / 2, y_of(lo), y_of(hi))
+        c.text(x + bw / 2, min(y, y_of(hi)) - 10, f"{d['median_ms']:.3f}",
+               size=10, anchor="middle")
+        for k, part in enumerate(label.split("\n")):
+            c.text(x + bw / 2, bottom + 20 + k * 13, part, size=10,
                    anchor="middle", fill=MUTED)
 
-    c.text(24, 330,
-           "Same prevention either way (90%). Presidio buys detection 76% -> 85%.",
+    cost_struct = (struct["median_ms"] - floor["median_ms"]) if (struct and floor) else 0
+    c.text(24, 356,
+           f"Mediation cost = arm median minus the no-agents floor: "
+           f"{cost_struct:.3f} ms for the structural agents"
+           + (f", {presidio['median_ms'] - floor['median_ms']:.2f} ms with Presidio."
+              if presidio and floor else "."),
+           size=9, fill=MUTED)
+    c.text(24, 370,
+           "Presidio buys detection 76% -> 90% and exfiltration 73% -> 76%. Figures are "
+           "machine-specific; see report/RESULTS.md for the CPU.",
+           size=9, fill=MUTED)
+    c.text(24, 384,
+           "The axis is logarithmic: the floor and the structural agents differ from "
+           "Presidio by three orders of magnitude, and a linear axis hides both.",
            size=9, fill=MUTED)
     return c.render()
 
 
 # --------------------------------------------------------------------------- #
 
-def _latency_from_snapshot(path: pathlib.Path) -> tuple[Optional[float], Optional[float]]:
-    """Pull avg/p95 out of the Presidio-ON snapshot, tolerantly.
+def _load_latency(path: pathlib.Path) -> Optional[dict]:
+    """Read a latency-*.json written by `demo_app.eval.latency`.
 
-    The snapshot's schema is not this module's to define, so search rather than assume;
-    a missing figure skips the latency chart instead of inventing one.
+    Replaces a function that rummaged through the metrics snapshot for any key containing
+    "laten". That worked until the snapshot's schema changed, and then it silently kept
+    drawing whatever it found — which is how the figure ended up showing timings that
+    were measuring model initialisation. A missing file now SKIPS the chart rather than
+    guessing.
     """
     if not path.exists():
-        return None, None
-    import json
+        print(f"      ({path} not found; cwd is {pathlib.Path.cwd()})")
+        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None, None
-
-    found: dict[str, float] = {}
-
-    def walk(node) -> None:
-        if isinstance(node, dict):
-            for k, v in node.items():
-                lk = str(k).lower()
-                if isinstance(v, (int, float)) and "laten" in lk or (
-                        isinstance(v, (int, float)) and lk in ("avg_ms", "p95_ms")):
-                    if "p95" in lk:
-                        found.setdefault("p95", float(v))
-                    elif "avg" in lk or "mean" in lk:
-                        found.setdefault("avg", float(v))
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(data)
-    return found.get("avg"), found.get("p95")
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        # REPORTED, not swallowed. The first version returned None on any exception, so a
+        # missing `import json` surfaced as "no latency measurements" and sent me looking
+        # for the file instead of the bug — the same silent-fallback shape that let the
+        # old snapshot scraper keep drawing stale numbers after its schema moved.
+        print(f"      (could not read {path}: {exc!r})")
+        return None
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate the report figures as SVG.")
     ap.add_argument("--out", default="report/figures")
-    ap.add_argument("--presidio-on", default="demo_app/eval/presidio_on.json")
+    ap.add_argument("--latency-off", default="report/appendix/latency-presidio-off.json")
+    ap.add_argument("--latency-on", default="report/appendix/latency-presidio-on.json")
     args = ap.parse_args()
 
     import logging
     logging.disable(logging.INFO)
 
-    from demo_app.eval.baselines import ARMS, _false_positive_ci, _prevention_ci, run_all
+    from demo_app.eval.baselines import (
+        ARMS, _boundary_ci, _exfiltration_ci, _false_positive_ci, _prevention_ci, run_all,
+    )
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -385,20 +464,21 @@ def main() -> None:
     rows = run_all(include_secrets=False)
 
     figures = {
-        "fig1-four-arm.svg": fig_four_arm(rows, ARMS, _prevention_ci, _false_positive_ci),
+        "fig1-four-arm.svg": fig_four_arm(rows, ARMS, _exfiltration_ci, _boundary_ci,
+                                          _false_positive_ci),
         "fig2-by-family.svg": fig_by_family(rows, ARMS, _prevention_ci),
         "fig3-obfuscation-ladder.svg": fig_ladder(rows, ARMS, _prevention_ci),
     }
 
-    lat = [x for r in rows for x in r["arms"]["haris"]["latencies"]]
-    if lat:
-        lat.sort()
-        off_avg = sum(lat) / len(lat)
-        off_p95 = lat[min(len(lat) - 1, int(0.95 * len(lat)))]
-        on_avg, on_p95 = _latency_from_snapshot(pathlib.Path(args.presidio_on))
-        if on_avg is None:
-            print("  (no latency in the Presidio-ON snapshot — drawing the OFF bars only)")
-        figures["fig4-latency.svg"] = fig_latency(off_avg, off_p95, on_avg, on_p95)
+    off = _load_latency(pathlib.Path(args.latency_off))
+    on = _load_latency(pathlib.Path(args.latency_on))
+    if off:
+        figures["fig4-latency.svg"] = fig_latency(off, on)
+        if not on:
+            print("  (no Presidio-ON latency file — drawing the structural arms only)")
+    else:
+        print(f"  (!) no latency measurements at {args.latency_off} — skipping fig4.")
+        print("      Run: python -m demo_app.eval.latency --json " + args.latency_off)
 
     for name, svg in figures.items():
         (out / name).write_text(svg, encoding="utf-8")
