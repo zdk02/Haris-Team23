@@ -5,21 +5,29 @@
 # touches a matching path, and a red build in an area points at a named owner rather than
 # "someone should look at it".
 #
+# The split mirrors the two working lanes: P1 owns the security core and the evaluation,
+# P2 owns notifications, CI and deployment. Listing both people on every path would answer
+# the question no better than having no file at all.
+#
 # Syntax:  <path-pattern>   <@owner> [@more-owners]
-# NOTE: replace @TEAMMATE_GITHUB_HANDLE below with your teammate's real GitHub username
-#       (CODEOWNERS entries must be real GitHub accounts to take effect).
+# Order matters: the LAST matching rule wins, so the catch-all goes first.
 
 # Default owners for anything not matched by a more specific rule below.
-*                        @zdk02 @TEAMMATE_GITHUB_HANDLE
+*                        @zdk02 @bhb06
 
-# The Phase 4 notification system.
-/haris/notify/           @zdk02 @TEAMMATE_GITHUB_HANDLE
-/NOTIFICATIONS.md        @zdk02 @TEAMMATE_GITHUB_HANDLE
+# P1 lane — the security core and the evaluation.
+/haris/agents/           @zdk02
+/haris/orchestrator/     @zdk02
+/haris/policy/           @zdk02
+/demo_app/eval/          @zdk02
+/EVAL_DESIGN.md          @zdk02
 
-# CI and repo automation.
-/.github/                @zdk02 @TEAMMATE_GITHUB_HANDLE
-
-# The security agents and the policy/orchestrator core.
-/haris/agents/           @zdk02 @TEAMMATE_GITHUB_HANDLE
-/haris/orchestrator/     @zdk02 @TEAMMATE_GITHUB_HANDLE
-/haris/policy/           @zdk02 @TEAMMATE_GITHUB_HANDLE
+# P2 lane — notifications, CI, deployment.
+/haris/notify/           @bhb06
+/NOTIFICATIONS.md        @bhb06
+/.github/                @bhb06
+/haris-infra.yaml        @bhb06
+/Dockerfile              @bhb06
+/verify-deployment.ps1   @bhb06
+/teardown.ps1            @bhb06
+/report/deployment-notes.md  @bhb06

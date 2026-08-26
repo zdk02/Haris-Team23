@@ -290,3 +290,37 @@ def test_counts_separate_delivered_failed_and_skipped(monkeypatch):
     assert n.counts["delivered"] == 1
     assert n.counts["failed"] == 1
     assert n.counts["skipped"] == 1
+
+
+
+def test_the_ci_notifier_routes_through_the_dispatcher(monkeypatch):
+    """R5. `.github/notify_ci_failure.py` used to call `WebhookChannel().send()` directly,
+    which walked around de-dup, the always-log rule AND `_sanitize()` — so NOTIFICATIONS.md's
+    "one choke point" claim was false of the single caller living outside the package.
+
+    Asserts the CI path goes through `Notifier.notify()`, by handing it a Notifier and
+    checking the dispatcher's own bookkeeping moved."""
+    import importlib.util
+    import pathlib
+
+    script = pathlib.Path(__file__).resolve().parents[1] / ".github" / "notify_ci_failure.py"
+    spec = importlib.util.spec_from_file_location("notify_ci_failure", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)          # importing must not send anything
+
+    monkeypatch.setenv("CI_REF", "main")
+    monkeypatch.setenv("CI_SHA", "abc123456")
+    monkeypatch.setenv("CI_ACTOR", "zdk02")
+    monkeypatch.setenv("CI_RUN_URL", "https://github.com/zdk02/Haris-Team23/actions/runs/1")
+
+    cap = CaptureChannel(min_severity=Severity.CRITICAL)
+    notifier = mod.main(notifier=Notifier(channels=[cap]))
+
+    assert notifier.counts["emitted"] == 1, "the event did not go through the dispatcher"
+    assert notifier.counts["delivered"] == 1
+    assert len(cap.got) == 1
+    event = cap.got[0]
+    assert event.severity is Severity.CRITICAL
+    assert event.source == "ci"
+    assert "FAILED" in event.summary and "abc12345" in event.summary
+    assert not event.metadata, "channels must receive the sanitized copy"
