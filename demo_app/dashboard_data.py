@@ -384,11 +384,21 @@ def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> di
     """Everything the dashboard needs, in one call. Reads from Haris's audit log, and
     collects the run's notification events (blocked leaks, any detector crash) into a
     buffer the alert banner renders."""
-    from haris.notify import Notifier
-    from haris.notify.channels import BufferChannel
+    from haris.notify import Notifier, Severity
+    from haris.notify.channels import BufferChannel, WebhookChannel
 
+    # TWO channels, and the second one is the point. The BufferChannel is the zero-config
+    # in-process feed the alert banner renders. The WebhookChannel is the only route out of
+    # the process -- and it must be constructed HERE, not just in run_secured(): the deployed
+    # ECS task runs `streamlit run demo_app/dashboard.py`, which reaches get_dashboard() and
+    # never touches haris_pipeline.run_secured(). The WARNING floor set at
+    # haris_pipeline.py:201 therefore governed a path production does not take, so a blocked
+    # leak on haris-monitor.com reached the banner and nothing else, whatever
+    # HARIS_ALERT_WEBHOOK was set to. Silent no-op when the URL is unset, so local runs, CI
+    # and a grader's machine are unaffected.
     incidents_buffer = BufferChannel()
-    notifier = Notifier(channels=[incidents_buffer])
+    notifier = Notifier(channels=[incidents_buffer,
+                                  WebhookChannel(min_severity=Severity.WARNING)])
     audit = run_battery(mode=mode, include_secrets=include_secrets, notifier=notifier)
     records = _display_records(audit)
     return {

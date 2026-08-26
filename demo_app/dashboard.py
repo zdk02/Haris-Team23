@@ -26,6 +26,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
+import logging
+from haris.logging_config import configure_logging
 
 from demo_app.dashboard_data import (
     COLOR, ACTION_COLOR, get_dashboard, presidio_available,
@@ -576,10 +578,27 @@ def _audit_log(records, sessions, subjects):
         })
 
 
+@st.cache_resource
+def _configure_operational_logging() -> bool:
+    """Give the Tier-1 operational logger a destination in the DEPLOYED path.
+
+    Streamlit is the production entry point (the ECS task runs `streamlit run
+    demo_app/dashboard.py`), and it was the only entry point that never configured logging —
+    so audit checkpoints, notifier events and health errors were emitted to a logger with no
+    handler and dropped. On Fargate the handler writes to stderr, which the awslogs driver
+    ships to CloudWatch, so this is what makes the truncation reference in THREAT_MODEL.md §2
+    land somewhere the audit file's writer does not control.
+
+    `@st.cache_resource` runs it exactly once per server process, not on every rerun.
+    """
+    configure_logging(level=logging.INFO)
+    return True
+
 # --------------------------------------------------------------------------- #
 # App                                                                          #
 # --------------------------------------------------------------------------- #
 def main():
+    _configure_operational_logging()
     if not _authenticated():
         return
     page, mode, include_secrets = _sidebar()

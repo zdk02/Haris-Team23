@@ -180,6 +180,14 @@ def run_secured(
                         webhook URL is configured, which is the normal case for a local run
       health         -> the HealthCheck with its probes registered, so a caller (or a
                         /health endpoint) can re-run them after the fact
+      
+    LOGGING. This function deliberately does NOT call `configure_logging()`. Configuring the
+    root of a logging namespace is an ENTRY POINT's job, not a library call's -- doing it here
+    would hijack the configuration of every caller, including pytest's `caplog`, which is why
+    the operational tier ends up untested precisely where it matters. Both entry points do it:
+    `haris_pipeline.main()` via `configure_operational_logging()`, and `dashboard.main()` via
+    `_configure_operational_logging()` -- the second is the DEPLOYED one, and it was the one
+    missing.
     """
     store = GraphStateStore()
     policy = Policy(mode=mode, thresholds=thresholds or {})

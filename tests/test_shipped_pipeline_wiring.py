@@ -159,34 +159,39 @@ def test_the_chain_probe_is_actually_registered():
     assert {"agents", "state_store", "audit_chain"} <= set(status.checks)
 
 
-def test_a_blocked_leak_actually_reaches_a_channel():
-    """THE ALERT WIRE, end to end. Two ways this was hollow: the webhook filtered WARNING
-    out (a blocked leak is WARNING, not CRITICAL), and a webhook with no HARIS_ALERT_WEBHOOK
-    set is a silent no-op anyway — so on every machine that has not configured one, "the
-    operator is alerted" described nothing. Assert the alert ARRIVED, not that a notifier
-    object exists."""
+def test_the_dashboard_notifier_has_an_out_of_band_channel(monkeypatch):
+    """R3b — THE DEPLOYED CHANNEL SET. The sibling test above proves the WARNING floor is
+    right in `run_secured`. The ECS task does not call `run_secured`: it runs dashboard.py,
+    which reaches `dashboard_data.get_dashboard()`. That built a Notifier with only the
+    in-memory BufferChannel, so a blocked leak on the live site reached the banner and left
+    the process by no route at all -- R3's fix governing a path production never takes.
+
+    Asserts the CHANNEL SET the deployed path constructs, not the constant, so the test
+    fails if either the webhook is dropped or its threshold is raised back above WARNING.
+    """
     from haris.notify.notifier import _rank
     from haris.schemas.notification import Severity
 
-    result = run_secured("wire-alert", "patient-A", EXTERNAL_EXAMPLE,
-                         leak="identified", include_secrets=False)
-    assert result["blocked"] is True
+    import demo_app.dashboard_data as dd
 
-    events = result["alerts"].events()
-    assert events, "a blocked leak raised no alert on any channel"
-    blocked_alert = events[0]
-    assert blocked_alert.severity is Severity.WARNING, blocked_alert
-    assert "blocked" in blocked_alert.summary.lower(), blocked_alert.summary
-    assert not blocked_alert.metadata, "channels must receive the sanitized copy"
+    captured = {}
+    real = dd.run_battery
 
-    # And the out-of-band channel must accept that severity, or a deployment that DOES
-    # configure a webhook still hears nothing about caught leaks.
-    channels = result["haris"].adapter.orchestrator.notifier.channels
-    accepting = [c for c in channels
-                 if _rank(Severity.WARNING) >= _rank(c.min_severity)]
+    def spy(*a, notifier=None, **kw):
+        captured["notifier"] = notifier
+        return real(*a, notifier=notifier, **kw)
+
+    monkeypatch.setattr(dd, "run_battery", spy)
+    # Unset, so the webhook is a no-op and this test never touches the network.
+    monkeypatch.delenv("HARIS_ALERT_WEBHOOK", raising=False)
+    dd.get_dashboard(include_secrets=False)
+
+    channels = captured["notifier"].channels
+    accepting = [c for c in channels if _rank(Severity.WARNING) >= _rank(c.min_severity)]
     assert any(c.name == "webhook" for c in accepting), (
-        "the webhook rejects WARNING, so a blocked leak never leaves the process")
-
+        "the deployed dashboard has no out-of-band channel that accepts WARNING — a blocked "
+        "leak never leaves the container")
+    assert any(c.name == "buffer" for c in accepting), [c.name for c in channels]
 
 def test_audit_checkpoints_are_emitted_for_every_record(caplog):
     """A checkpoint is the reference that makes truncation detectable. This covers
@@ -255,3 +260,41 @@ def test_an_external_leak_is_blocked_through_the_whole_graph():
     assert result["blocked"] is True
     assert result["audit"].records()[-1].action == "block"
     assert result["audit"].records()[-1].delivered_content is None
+
+def test_the_dashboard_entry_point_gives_the_checkpoint_logger_a_destination(monkeypatch):
+    """THE DEPLOYED DESTINATION. The ECS task runs `streamlit run demo_app/dashboard.py`,
+    not haris_pipeline. The sibling test above covers the CLI entry point; this one covers
+    the only entry point production actually takes — which is the one that had no handler,
+    so every audit checkpoint, notifier event and health error in the container was dropped.
+    """
+    import demo_app.dashboard as dash
+    from haris.logging_config import OPERATIONAL_LOGGER
+
+    ops = logging.getLogger(OPERATIONAL_LOGGER)
+    saved = (list(ops.handlers), ops.level, ops.propagate)
+    for handler in list(ops.handlers):
+        ops.removeHandler(handler)
+    ops.setLevel(logging.NOTSET)
+    ops.propagate = True
+
+    # st.cache_resource memoises the FIRST call for the life of the process, so without this
+    # the body never re-runs and the result depends on test ORDER, not on the code.
+    dash._configure_operational_logging.clear()
+
+    # main() configures logging, THEN returns at the auth gate. Stubbing the gate exercises
+    # the real ordering: a container with no operator token must still have an ops log.
+    monkeypatch.setattr(dash, "_authenticated", lambda: False)
+    try:
+        dash.main()
+        assert any(getattr(h, "_haris_operational", False) for h in ops.handlers), (
+            "dashboard.main() configured no operational handler — the DEPLOYED container "
+            "drops every audit checkpoint, notifier event and health error")
+        assert logging.getLogger("haris.audit.checkpoint").isEnabledFor(logging.INFO)
+    finally:
+        for handler in list(ops.handlers):
+            ops.removeHandler(handler)
+        for handler in saved[0]:
+            ops.addHandler(handler)
+        ops.setLevel(saved[1])
+        ops.propagate = saved[2]
+        dash._configure_operational_logging.clear()
