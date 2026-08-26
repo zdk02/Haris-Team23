@@ -56,66 +56,277 @@ Submission: 31 August 2026
 
 ## 2. Threat model
 
-**Owner:** **Status:** TODO
+**Owner:** Zeinab · Batoul **Status:** DRAFT
 
-> NOTE: Source is `THREAT_MODEL.md`, refreshed. Present as threat → mechanism that answers
-> it → the staged attack that demonstrates it. Problems A–F (direct leak, hidden/derived
-> leak, wrong recipient, mixed subjects, hidden instructions [roadmap], spoofed identity).
->
-> **Do not omit §2.3.** It is the section a security reviewer will look for, and having
-> written it ourselves is worth more than any fix we could ship in nine days.
+Source: `THREAT_MODEL.md`, which is maintained alongside the code and is the authority where
+this section and it disagree.
 
 ### 2.1 Assets, adversary, and scope
 
+**What we are protecting.** In the hospital reference application: private health information
+(name, date of birth, condition); the *data subject* a message concerns, since correct data in
+the wrong patient's session is still a breach; credentials that appear in message bodies; and
+the audit log itself, which is the record of what Haris decided.
+
+**The adversary.** A compromised or misbehaving agent *inside* the system. It can compose
+messages, address them anywhere, and set the metadata it attaches. It cannot read Haris's
+process memory or write to the audit file directly — those are the deployment-era concerns in
+§2.4. This is the interesting adversary for our purposes because it is the one existing
+guardrails cannot see: every message it sends is individually well-formed.
+
+**Scope.** The messages agents exchange, in ENFORCE mode. Network and host attacks, and anyone
+with direct machine access, are out of scope by design.
+
 ### 2.2 Threats and how Haris answers them
 
-### 2.3 Trust boundary and stated assumptions
+Six problems, each handled by a different agent, each staged as an attack that must be stopped
+and paired with a benign control that must be delivered. A security tool that cripples ordinary
+work is not useful, so both halves are measured.
 
-> NOTE: State explicitly that Haris trusts the interception adapter to supply `session_id`,
-> `sender` and `recipient` from the transport rather than from the message body. Where an
-> application allows a compromised agent to set these itself, the corresponding checks are
-> bypassable. Binding these at the adapter is the deployment-era requirement. Name it; do
-> not bury it.
+| | Threat | Mechanism | Staged as |
+|---|---|---|---|
+| **A** | **Direct leak.** A record leaves the system as-is — a patient file emailed outside. | Secrets & PII scanner on content, Authorization on egress. | TC2, CRED |
+| **B** | **Hidden leak.** The data is reworded or summarised so it no longer matches the original but still identifies the subject. A text search misses it; only knowing where the data came from catches it. | Information-flow agent: taint over a lineage graph. | TC3 |
+| **C** | **Wrong recipient.** The message is fine in itself but not for this sender and receiver — a summary the internal doctor may see and an outside address may not. | Authorization agent plus policy rules. | TC5 |
+| **D** | **Mixed subjects.** One patient's data appears while another patient is being handled, with every agent behaving correctly. | Subject-binding: a session is bound to its first data subject. | TC4 |
+| **E** | **Hidden instructions.** Harmful instructions embedded in data to steer a later agent. | *Roadmap.* See §2.5. | TC6, named not scored |
+| **F** | **Spoofed identity.** A message claims to come from an agent it did not. Without verifiable identity every relationship rule is void. | Identity agent: per-agent bearer token, verified against a registry. | SPOOF |
+
+**B and D are the reason this project exists.** A per-message guardrail sees each message
+alone, so it cannot know that this summary derives from a record read three hops ago, nor that
+this correctly-formed record belongs to a different patient than the session is about. §6.4.2
+measures exactly that: two families no reference baseline catches, for two different reasons.
+
+### 2.3 The trusted-metadata boundary
+
+**This is the most important assumption in the system, and we state it rather than bury it.**
+
+Every message reaching Haris carries metadata — `session_id`, `sender`, `receiver`,
+`data_type`, `data_subject`, `recipient`, `auth_token` — and most security decisions key off
+those fields. But metadata arrives *from the sender*, which is the exact party this threat
+model treats as possibly compromised. An agent that edits one key changes what Haris concludes
+without changing a byte of content.
+
+**Where the enforcement point sits decides whether a check is authoritative.** Haris enforces
+at the interception adapter. Where that adapter is on the data path — it performs or gates the
+send — its decision is authoritative: the message does not move unless Haris allows it. Where
+the application sends first and merely tells Haris afterwards, the metadata is a claim by the
+party being judged, and the check is advisory. Moving the enforcement point onto the transport
+is a deployment requirement, not a code change.
+
+**What is bound, and what is still trusted.** The LangGraph adapter binds transport-derived
+metadata at `wrap()` time — when the graph is assembled, before any agent runs — and applies
+those values *after* copying anything from shared graph state, so a message body cannot
+override them.
+
+| field | source | can a compromised agent change it? |
+|---|---|---|
+| `sender`, `receiver`, `data_type` | `wrap()` argument | no |
+| `recipient`, where the destination is known at wiring time | `wrap(recipient=…)` | no |
+| `recipient`, where the destination is dynamic | shared graph state | **yes** |
+| `session_id`, `data_subject` | shared graph state | **yes** |
+| `auth_token` | the sending agent | yes, but it must match the registry |
+
+Both halves are pinned by tests, including one that deliberately asserts the *remaining*
+exposure so that it stays visible rather than drifting shut unnoticed.
+
+**An absent `recipient` is ambiguous and we do not pretend otherwise.** A message with no
+recipient is both the ordinary internal handoff and what a compromised sender produces by
+deleting the key; nothing in the message separates them. We implemented and measured the
+strict reading — treat absent as external — and it returns **leak prevention 100%, false
+positives 100%, utility 0%**: every session dies at its first hop, because that hop is a
+legitimate internal PHI handoff with no recipient. The defaults therefore keep the permissive
+reading, and the strict reading becomes correct only once the adapter binds `recipient` from
+the transport, at which point absence really does mean "no destination was declared". Those
+numbers are reproducible — `python -m demo_app.eval.strict_recipient` runs both configurations
+over the same corpus — and they are the clearest illustration of why prevention is never
+reported alone: the strict row prevents everything *because* it delivers nothing.
+
+**The cost of this boundary is measured, not asserted.** §6.4.3 reports `forged_session_scope`:
+24 scenarios in which an attacker supplies a session-scope declaration of their own, and walks
+through. That is the price of honouring a sender-supplied field, and it is in the results table
+rather than a footnote.
+
+**The deployment requirement, stated plainly.** Bind `session_id`, `sender`, `receiver` and
+`recipient` at the interception adapter from the transport, not from the message body. Where an
+application lets a compromised agent set these itself, the corresponding checks are bypassable
+and Haris's guarantees are correspondingly weaker. We did not close this by making the agents
+more suspicious — we measured that approach and it costs the system all of its utility. We
+closed the part a binding point can close, and named the rest.
 
 ### 2.4 Protecting Haris itself
 
-> NOTE: Minimise what it holds (hash references; blocked content never retained), keyed
-> hash chain, deterministic detectors so inspected content cannot prompt-inject Haris,
-> operator-gated dashboard. Be precise about what the chain does and does not resist —
-> see §8.
+Haris sees every message, so a breach of Haris is worse than any single leak it prevents.
+
+**Minimise what it holds.** The audit log stores a SHA-256 reference to message content rather
+than the body. Delivered content is retained only when `store_delivered_content` is explicitly
+enabled, and **never for a blocked message** — an earlier version wrote the plaintext of every
+secret Haris had ever refused into the log, and the dashboard rendered it under the heading
+"delivered payload" for a message that was never delivered.
+
+**Make the log tamper-evident.** Records are hash-chained, and with an operator key configured
+(`HARIS_AUDIT_KEY`) each link is an HMAC, so an attacker who reaches the file cannot rewrite it
+or forge entries undetected. Two limits, both honest: dropping records from the *end* leaves a
+valid shorter chain, so truncation is caught only against a reference held outside the log —
+`checkpoint()` returns the chain head and record count, and the pipeline emits it to the
+operational log stream, a different destination from the audit file. And an attacker who can
+execute code inside Haris can read the key. Write-once storage is the deployment answer to
+that; the dashboard badge distinguishes "chain verified" from "tamper-evident" precisely so it
+cannot claim a property an unkeyed deployment does not have.
+
+**Treat inspected content as untrusted.** Haris's checks are deterministic detectors, not an
+LLM being handed the content as instructions, so a message cannot prompt-inject Haris.
+
+**Gate the log.** The dashboard requires an operator token to read the audit trail.
+
+**Surface failures actively.** A detector crash, a fail-closed event, a blocked leak or a
+failed health check raises a notification — operational log, dashboard banner, webhook — so a
+broken guard reaches a person rather than sitting in a file. Alerts carry a content reference
+and sanitised text, never the secret, so the alert channel cannot become the leak.
+
+**One thing this does not do, corrected here because an earlier docstring claimed otherwise.**
+Agents *can* see each other's tokens in transit: the state store records whole messages
+including metadata, and hands session history to every agent on every hop, so a downstream
+agent can read an upstream token out of the history it is given. There is also no nonce or
+timestamp anywhere, so a captured message replays indefinitely. Both are in §8.
+
+### 2.5 What is deliberately not built
+
+**Prompt injection (Problem E) is out of scope, and that is a design decision rather than an
+omission.** Injection is a per-message content problem, and per-agent guardrails already
+address it: Bedrock Guardrails and NeMo Guardrails both filter an agent's input and output.
+Our contribution is the cross-agent layer those tools structurally cannot provide, because they
+hold no model of the communication graph or of how data has moved. Composing Haris with an
+input guardrail is the correct architecture, and building a weak injection detector in the time
+available would have replaced a documented boundary with an undefended claim.
 
 ---
 
 ## 3. System design
 
-**Owner:** **Status:** TODO
-
-> NOTE: Source is Phase 3 deck slides 5–13. Include the high-level design AND the low-level
-> six-step message pipeline (the deck dropped the low-level slide for time; the report has
-> room for it).
+**Owner:** Zeinab · Batoul **Status:** DRAFT
 
 ### 3.1 Architecture overview
 
-### 3.2 The message pipeline — intercept, context, check, resolve, enforce, record
+Haris is middleware. It sits on the channel between agents rather than inside any of them, and
+every message crosses it. That position is what the design buys: an agent-level guardrail sees
+one message and one agent, while Haris sees the whole session — who has sent what to whom, and
+where each piece of data came from.
+
+Three properties follow from it, and each maps to a threat in §2.2.
+
+**Relationship awareness.** Decisions are made per sender/receiver pair and per destination
+rather than per message. The same summary is allowed to the internal doctor and refused to an
+outside address; the message is identical and the answer differs.
+
+**Trajectory awareness.** A lineage graph records what each session has read, so a message can
+be judged against the history of the data in it rather than only against its own text. This is
+what catches a leak that no longer resembles the record it came from.
+
+**Application independence.** Haris knows nothing about hospitals. A deployment is described by
+configuration — trust boundary, sensitive data types, identity registry, data-sharing
+agreements — and the same agent classes run against it unchanged. §6.1 exercises this with four
+different domains that share no code.
+
+### 3.2 The message pipeline
+
+Every message follows the same six steps, and the ordering carries security properties that are
+easy to lose.
+
+**1 · Intercept.** The adapter wraps the agent boundary and constructs the `Message` in the
+frozen schema, binding transport-derived metadata as described in §2.3.
+
+**2 · Context.** The orchestrator asks the state store for the session's history *before* any
+agent runs. Every agent therefore judges the current message against everything the session has
+already done.
+
+**3 · Check.** Each security agent returns a `Verdict` — a label, a score, a human-readable
+reason, and optionally redacted content. Agents do not act; they report. Each runs inside a
+reliability guard, so a detector that crashes cannot take the pipeline with it (§4.1).
+
+**4 · Resolve.** The policy engine combines the verdicts into a single `Decision` (§3.4).
+
+**5 · Enforce.** In ENFORCE mode a blocking decision stops the message; in MONITOR mode
+everything is recorded and nothing is stopped.
+
+**6 · Record.** The message is written to the lineage store **only if it was not blocked**, and
+the decision is written to the audit log either way. That asymmetry matters: a refused hop
+leaves no trace in lineage, so an attacker who cannot get a single message through cannot bind
+a session to their own data subject and deny service to everyone after them. The audit log
+records the block, because retaining refusals is exactly its job.
 
 ### 3.3 The security agents
 
-> NOTE: One subsection each, and for each one give the **technique**, not just the name:
-> what it does, why that design, what it catches, and what it structurally cannot catch.
-> - Secrets & PII — Presidio (spaCy NER) + detect-secrets, boundary-aware
-> - Authorization — deterministic relationship table, allow-list by default, egress control
-> - Information-flow — taint over a lineage graph; **state the matching mechanism honestly**
->   (normalised token matching after the Aug 22 fix; note what the previous exact-substring
->   version missed and that this is measured in §6)
-> - Subject-binding — instance-level authorisation, session bound to its first data-subject
-> - Identity — per-agent bearer token, constant-time compare; no anti-replay (see §8)
+Five agents, each answering a different question. What follows gives the technique and, for
+each, what it structurally cannot catch — the limits are measured in §6 rather than assumed.
+
+**Secrets & PII.** Presidio (spaCy NER) for personal data, `detect-secrets` for credentials.
+Both are integration rather than invention: no bespoke regexes or entity models. Two design
+choices carry weight. Entity types are *weighted* — Presidio reports `DATE_TIME` for "in two
+weeks", which would false-positive on every clean summary — and findings are combined with a
+noisy-OR so weak signals corroborate rather than the strongest deciding alone. And government
+identifiers and payment instruments flag at egress regardless of score, because a detected SSN
+leaving the trust boundary is not a judgement call. *Cannot catch:* anything the detectors do
+not recognise, and recall varies with the names drawn (§6.6).
+
+**Authorization.** A deterministic relationship table plus egress control on sensitive data
+types. Data-sharing agreements are scoped per data subject, so "may we send to this address"
+and "may we send *this person's* data to this address" are separate questions — a distinction
+that turns out to be one of the two cases no reference baseline handles (§6.4.2). *Cannot
+catch:* anything whose metadata is well-formed and whose destination is legitimate.
+
+**Information-flow.** Taint over the lineage graph. A source read tags the session with the
+identifiers it contains; a later message is checked for whether any of them resurface on their
+way somewhere they should not go. Matching is normalised — lower-cased, separators collapsed,
+with a token pass that respects word boundaries — because the original exact-substring
+comparison was defeated by a double space. Extraction reads structured `Key: value` records,
+JSON, and free prose, after we measured that a corpus written only in the first shape was
+scoring the parser rather than the threat (§6.4.4). *Cannot catch:* a rewording that discards
+every token, an encoded identifier, or a value split across two messages — all three measured
+in §6.4.3.
+
+**Subject-binding.** Instance-level authorisation: a session binds to its first data subject,
+and a later message about a different one is refused. Two further bindings were added as the
+evaluation exposed the need. *Content binding* compares a record's own assertion of whose it is
+against the label the message declares, which catches a payload that contradicts its own
+metadata. *Declared scope* lets the calling application state up front which subjects a session
+legitimately covers, because session binding alone refuses a ward round — a clinician handling
+two patients — and that traffic is indistinguishable from an attack. §6.4.3 reports what
+honouring that declaration costs.
+
+**Identity.** A per-agent bearer token, compared in constant time against a registry supplied at
+construction. Without it every relationship rule is void, since a spoofer simply labels their
+message as coming from someone else. *Cannot catch:* replay, since there is no nonce or
+timestamp; and the token is visible in session history to later agents (§2.4).
 
 ### 3.4 The policy engine
 
-> NOTE: The four rules in order — threshold, most-restrictive-wins, union of redaction
-> spans, mode gate. Explain why the mode gate is last.
+Verdicts are advice; the policy engine turns them into one decision, in four steps and in this
+order.
 
-### 3.5 Product shape — library, service, dashboard
+**1 · Threshold.** Each verdict's score is compared against a configured per-agent threshold,
+so a low-confidence flag does not become an action.
+
+**2 · Most restrictive wins.** Across the surviving verdicts, the strongest action is selected.
+A single agent's block is not overridden by four agents' allow — an important property when the
+agents are deliberately independent and only one of them may understand a given threat.
+
+**3 · Union of redaction spans.** Where several agents want to redact, their spans are combined
+rather than one rewrite replacing another. Composing rewrites naively loses redactions.
+
+**4 · Mode gate, last.** MONITOR clamps any action above FLAG. This is last on purpose: every
+agent still runs, every verdict is still recorded, and the audit log in monitor mode shows what
+*would* have been blocked. Gating earlier would make monitor mode a different system rather
+than the same system with enforcement withheld.
+
+### 3.5 Product shape
+
+The same core ships three ways. As a **library**, wrapping an existing agent graph through an
+adapter. As a **service**, a small HTTP surface with `POST /v1/inspect` and `GET /health`, which
+is also what the container orchestrator needs for health checking. And as a **dashboard**, the
+operator view of the audit log, the lineage graph and the live notification banner — read-only,
+token-gated, and reading the persisted log rather than calling the service, so the two are not
+coupled.
 
 ---
 
