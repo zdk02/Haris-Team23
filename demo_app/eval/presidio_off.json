@@ -2,16 +2,16 @@
   "scenarios": 576,
   "attacks": 384,
   "benign": 192,
-  "exfiltration_prevented": 0.7614,
+  "exfiltration_prevented": 0.7273,
   "exfiltration_n": 264,
   "boundary_crossings_caught": 1.0,
   "boundary_crossings_n": 48,
-  "detection_rate": 0.901,
+  "detection_rate": 0.7604,
   "false_positive_rate": 0.125,
   "utility_rate": 0.875,
-  "latency_avg_ms": 8.982,
-  "latency_p95_ms": 14.433,
-  "leak_prevention_rate_verdict_based": 0.875,
+  "latency_avg_ms": 0.0644,
+  "latency_p95_ms": 0.198,
+  "leak_prevention_rate_verdict_based": 0.7604,
   "by_leak_style": {
     "verbatim": {
       "n": 48,
@@ -21,14 +21,14 @@
     },
     "derived": {
       "n": 264,
-      "detection": 0.9427,
-      "prevention": 0.9896,
+      "detection": 0.8542,
+      "prevention": 0.8542,
       "false_positive": 0.3333
     },
     "paraphrase": {
       "n": 24,
-      "detection": 0.75,
-      "prevention": 0.75,
+      "detection": 0.0,
+      "prevention": 0.0,
       "false_positive": null
     },
     "obfuscated": {
@@ -45,7 +45,7 @@
     },
     "none": {
       "n": 192,
-      "detection": 0.9306,
+      "detection": 0.6667,
       "prevention": 0.6667,
       "false_positive": 0.0
     }
@@ -53,46 +53,46 @@
   "by_domain": {
     "hospital": {
       "n": 144,
-      "detection": 0.875,
-      "prevention": 0.875,
+      "detection": 0.7604,
+      "prevention": 0.7604,
       "false_positive": 0.125
     },
     "education": {
       "n": 144,
-      "detection": 0.875,
-      "prevention": 0.8646,
+      "detection": 0.7604,
+      "prevention": 0.7604,
       "false_positive": 0.125
     },
     "finance": {
       "n": 144,
-      "detection": 0.9271,
-      "prevention": 0.8854,
+      "detection": 0.7604,
+      "prevention": 0.7604,
       "false_positive": 0.125
     },
     "hr": {
       "n": 144,
-      "detection": 0.9271,
-      "prevention": 0.875,
+      "detection": 0.7604,
+      "prevention": 0.7604,
       "false_positive": 0.125
     }
   },
   "by_topology": {
     "chain": {
       "n": 192,
-      "detection": 0.9297,
-      "prevention": 0.9062,
+      "detection": 0.8125,
+      "prevention": 0.8125,
       "false_positive": 0.125
     },
     "star": {
       "n": 192,
-      "detection": 0.8906,
-      "prevention": 0.8594,
+      "detection": 0.75,
+      "prevention": 0.75,
       "false_positive": 0.125
     },
     "branch": {
       "n": 192,
-      "detection": 0.8828,
-      "prevention": 0.8594,
+      "detection": 0.7188,
+      "prevention": 0.7188,
       "false_positive": 0.125
     }
   },
@@ -105,8 +105,8 @@
     },
     "hard": {
       "n": 24,
-      "detection": 0.75,
-      "prevention": 0.75,
+      "detection": 0.0,
+      "prevention": 0.0,
       "false_positive": null
     },
     "medium": {
@@ -131,8 +131,8 @@
     },
     "external_paraphrase": {
       "n": 24,
-      "detection": 0.75,
-      "prevention": 0.75,
+      "detection": 0.0,
+      "prevention": 0.0,
       "false_positive": null
     },
     "external_obfuscated": {
@@ -215,7 +215,7 @@
     },
     "forged_session_scope": {
       "n": 24,
-      "detection": 0.7917,
+      "detection": 0.0,
       "prevention": 0.0,
       "false_positive": null
     },
@@ -239,8 +239,8 @@
     },
     "rewrite_chain": {
       "n": 24,
-      "detection": 1.0,
-      "prevention": 1.0,
+      "detection": 0.8333,
+      "prevention": 0.8333,
       "false_positive": null
     },
     "stored_then_forwarded": {
@@ -251,8 +251,8 @@
     },
     "split_identifier": {
       "n": 24,
-      "detection": 0.5417,
-      "prevention": 0.9167,
+      "detection": 0.0,
+      "prevention": 0.0,
       "false_positive": null
     },
     "record_format": {
