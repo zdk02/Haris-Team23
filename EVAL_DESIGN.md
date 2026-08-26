@@ -1,19 +1,26 @@
 # Haris — Simulation-Based Evaluation: Design & Results
 
 **Status: authoritative description of the evaluation harness as built. Read before touching
-eval code.** (Supersedes the initial plan-time draft; this reflects the shipped code.)
+eval code.** Last reconciled with the code on 2026-08-26.
 
 The Phase-3 evaluation was a *curated 9-case set on one app* (`demo_app/hospital/eval_harness.py`):
 it proves each mechanism fires, but not generalization. This harness replaces that with a
-**generated evaluation over many different multi-agent systems**, producing a credible, measured
-claim: *unguarded multi-agent systems leak, and Haris measurably reduces that leakage across
-systems it was never hardcoded for.*
+**generated evaluation over many different multi-agent systems**, compared against non-Haris
+baselines, producing a claim that can be checked: *lineage-aware mediation catches violations
+that metadata checks and content scanning cannot, and costs something measurable in return.*
 
 One command runs everything, reproducibly:
 
     python -m demo_app.eval.simulate               # print the report (Presidio off, fixed seed)
     python -m demo_app.eval.simulate --secrets     # add the Presidio Secrets/PII agent
-    python -m demo_app.eval.simulate --json out.json   # also export metrics for the report
+    python -m demo_app.eval.baselines              # the four-arm comparison
+    python -m demo_app.eval.latency                # mediation cost, with a floor arm
+    python -m demo_app.eval.seed_sweep             # seed sensitivity
+
+**Numbers live in `report/RESULTS.md`, not here.** This document describes the design; that one
+records what it measured, with every figure traceable to a command. A results block inside a
+design document goes stale the moment either changes — which is exactly what happened to the
+one that used to sit at the bottom of this file.
 
 ---
 
@@ -24,34 +31,33 @@ One command runs everything, reproducibly:
 2. **We specify domains + secret/leak recipes; the generator automates the rest** — secret
    values, scenario combinations, message traffic, labels, runs, scoring.
 3. **Haris is app-agnostic already.** A new domain is run by passing its config (trust boundary,
-   authorization allow-list, source data type, tokens) into the existing agents — no agent is
-   forked or rewritten per domain (`demo_app/eval/domains.py::build_agents`).
+   authorization allow-list, source data type, tokens, partner agreements) into the existing
+   agents — no agent is forked or rewritten per domain (`demo_app/eval/domains.py::build_agents`).
 4. **The generator constructs ground truth; the check confirms the traffic realises it.**
    `oracle.py` re-derives each label from the generated traffic and never consults Haris's
    decision. It is NOT independent adjudication: it reads the same facts the generator wrote,
-   using checks that mirror Haris's own agents, and it disagrees with the generator **0 times
-   out of 312**. Call it a *label consistency check*. Genuine third-party confirmation is
+   using checks that mirror Haris's own agents, and it cannot disagree on a corpus the generator
+   built correctly. Call it a *label consistency check*. Genuine third-party confirmation is
    bought separately — `external_check.py` runs `detect-secrets` over the egress traffic and
-   confirms **24 of 312** labels (credential-shaped secrets only; it has no opinion on names,
-   record ids or diagnoses). A small honest number, not a large dishonest one.
-5. **We do NOT target 100% detection / 0% false positives.** A deliberate difficulty spectrum
-   plus per-class breakdowns make the numbers high but realistic, with visible, explainable edges.
-6. **Both former "measured-miss" classes turned out not to be what we claimed.** Recorded here
-   rather than quietly dropped:
-   - **Trivial obfuscation** — was 42% caught, presented as a difficulty tier. It was our
-     matcher being brittle, not the attack being hard. Normalising both sides took it to 100%
-     (`report/evidence/eval_before_C1.txt` vs `eval_after_C1.txt`). It is no longer a tier;
-     a graded ladder is task M2.
-   - **Semantic paraphrase** — presented as the honest ceiling. Measured 2026-08-24: those 24
-     messages carry **no injected identifier at all**, so a correct detector *should* pass
-     them. It was an empty test scored as a failure, not a ceiling. Task M3 replaces it with
-     paraphrases that genuinely retain the secret.
+   confirms the credential-shaped subset only; it has no opinion on names, record ids or
+   diagnoses. A small honest number, not a large dishonest one.
+5. **Compare against something.** Until 2026-08-24 every number was Haris measured against
+   itself, which answers "does Haris catch the attacks we wrote" and not "did anyone need
+   Haris". `baselines.py` adds three non-Haris arms scored by the identical rule. The first
+   run of it showed a six-line metadata heuristic matching Haris on prevention and beating it
+   on false positives — the corpus was separable by metadata alone and could not distinguish
+   lineage from a trivial rule. That finding drove task K.
+6. **We do NOT target 100% detection / 0% false positives.** A rate of 100% is a statement
+   about the corpus. Where the corpus contains no case a defence fails, say so rather than
+   reporting the number as a property of the defence.
 7. **The core evaluation is fully deterministic — no LLM judge.** Secrets are synthesized with
-   **Faker (seeded)**, following the source paper's method. The only LLM judge is the optional
-   real-LLM realism slice (future work).
+   **Faker (seeded, 23)**, following the source paper's method. `generate(seed=…)` exists so the
+   result can be checked for seed sensitivity, not so numbers can be shopped for.
 8. **Every scenario runs in two arms:** monitor (detect) / enforce (prevent). The former
    third arm — `agents=[]` in monitor mode — could not stop anything, so its output was a
-   constant rather than a baseline; it was removed and replaced by a measured leak metric.
+   constant rather than a baseline; it was removed and replaced by a measured leak metric. An
+   empty agent list IS used as a legitimate denominator in `latency.py`, where the quantity
+   being measured is time and time is spent either way.
 
 ---
 
@@ -59,154 +65,231 @@ One command runs everything, reproducibly:
 
 - **Domain:** hospital, education, finance, hr (`domains.py`).
 - **Topology:** chain, star, branch.
-- **Leak style:** verbatim · derived · obfuscated · paraphrase · credential · none.
-- **Kind:** attack (secret → unauthorized/external recipient, or wrong-subject session) vs benign.
-- **Variants:** 2 per combination → **312 scenarios** (192 attacks, 120 benign).
+- **Record format:** structured `Key: value`, JSON payload, clinician's narrative, chat
+  transcript, forwarded email thread — rotated across every family (task N2).
+- **Egress phrasing:** four per leak style, rotated by position (task N2).
+- **Kind:** attack vs benign.
+- **Variants:** 2 per combination → **576 scenarios** (384 attacks, 192 benign), 24 families
+  of 24.
 
-Each scenario = an agent graph + a list of `Message`s (scripted traffic, frozen `Message` schema)
-+ a ground-truth record `{is_attack, injected secret + identifiers, subject, authorized_recipients,
-leak_style, leak_occurred}`.
+Each scenario = an agent graph + a list of `Message`s (scripted traffic, frozen `Message`
+schema) + a ground-truth record: the injected secret and its identifiers, every subject whose
+record it injects, any identifier written in a transformed form, and the partner agreements in
+force.
 
-### Families (each exercises a specific agent / limitation)
+### Why the format and phrasing axes exist
 
-| Family | Kind | Exercises | Expected |
-|---|---|---|---|
-| external_verbatim | attack | Info-flow taint (+ Secrets/PII) | caught |
-| external_derived | attack | Info-flow taint | caught |
-| external_credential | attack | Secrets/PII (+ taint) | caught |
-| policy_egress | attack | Authorization (sensitive type → external) | caught |
-| subject_mismatch | attack | Subject-binding (patient-A vs B) | caught |
-| spoof | attack | Identity (missing token) | caught |
-| **external_obfuscated** | attack | reformatted id vs exact-match taint | **partly caught (hard)** |
-| **external_paraphrase** | attack | (no in-scope defense) | **missed (the gap)** |
-| internal_derived / internal_clean | benign | — | allowed |
-| near_miss_benign | benign | looks sensitive, stays internal | allowed |
-| same_subject | benign | subject-binding negative control | allowed |
-| **authorized_external** | benign | coarse trust boundary | **wrongly stopped (FP source)** |
+Before task N, every record was a `Key: value` block — which is exactly what the info-flow
+fallback parses — and every scenario of a given leak style carried the same sentence. So the
+corpus was written in the shape the detector expects, and could not have detected sensitivity
+to wording.
+
+Measured with a controlled probe (`record_format`, identical egress hop across five source
+shapes): structured 100%, JSON 100%, **narrative 0%, chat 0%**. Half of the realistic formats
+were unparseable and the headline rate was conditioned on the one we happened to author. The
+parser was widened rather than the finding documented — a prose extractor for identifier-shaped
+tokens, credential-shaped runs and capitalised name runs, plus content binding that reads a
+subject named in text as well as bracketed. All five formats now score 100%, and that family
+remains as the regression guard.
+
+The phrasing axis came out flat: four different sentences, identical rates, golden unchanged.
+That is the "survives the summarizer rewriting everything" claim made falsifiable, and it
+passed.
+
+### Families
+
+Twenty-four, grouped by what they exercise. Full behaviour per family is in
+`golden_rates.json`; the tests named beside each hold the claim.
+
+**Exfiltration — an identifier reaches an address outside the trust boundary**
+
+| Family | Exercises | Result |
+|---|---|---|
+| external_verbatim / external_derived | info-flow taint | caught |
+| external_credential | Secrets/PII + taint | caught |
+| policy_egress | authorization (sensitive type → external) | caught |
+| external_obfuscated | six-rung encoding ladder | layout caught, encodings not |
+| external_paraphrase | the semantic ceiling | missed (Presidio recovers most) |
+| rewrite_chain | cumulative degradation across five hops | falls at the last level |
+| deep_chain | 2–8 hops, identifier resurfacing at the end | caught at every depth |
+| stored_then_forwarded | parked with no recipient, then forwarded | redacted at the store |
+| split_identifier | one identifier across two messages | **missed — see below** |
+| record_format | five source shapes, identical egress | caught in all five |
+
+**Boundary crossings — a violation with nothing leaving the system**
+
+| Family | Exercises | Result |
+|---|---|---|
+| subject_mismatch | session binding | caught |
+| subject_forgery | content binding: payload contradicts its own label | caught; **no baseline sees it** |
+| partner_scope_violation | agreement scoped per data subject | caught; **no baseline sees it** |
+| spoof | identity (missing token) | caught |
+| forged_session_scope | an attacker writing their own session scope | **missed by design — see below** |
+
+**Benign**
+
+| Family | Why it is hard | Result |
+|---|---|---|
+| internal_derived / internal_clean / same_subject | controls | allowed |
+| authorized_external | a real record leaving the boundary under a referral agreement | allowed |
+| multi_subject_workflow | a ward round: traffic identical to an attack | allowed |
+| public_reference | a bulletin quoting a value that IS a taint tag | allowed |
+| near_miss_benign | a form template: identifier-shaped, owned by nobody | allowed; **both baselines refuse it** |
+| internal_handoff | an agent-to-agent summary with no declared recipient | **refused — the false positive we keep** |
 
 ## The arms
 
-For each scenario, feed its messages through the existing `Orchestrator`:
-(1) all agents `MONITOR` → detection; (2) all agents `ENFORCE` → prevention + latency
-(written to the tamper-evident `AuditLog`). Presidio is off by default, so the run is
-deterministic and dependency-free.
+Four, over the same corpus, scored by the same rule (`baselines.py`):
 
-**There is no "no-Haris" arm.** The old one ran `agents=[]` in monitor mode, which cannot
-stop anything — `most_restrictive([])` is ALLOW and monitor clamps above FLAG regardless — so
-its "100% of attacks leak" was fixed before the run started.
+- **no defence** — delivers everything. Pins the denominator.
+- **content scanner** — per-message inspection at egress: detect-secrets plus
+  identifier-shaped regexes. No session state. The "existing guardrail" the thesis is about.
+- **metadata heuristic** — the six lines from finding 01: recipient authorised, token present,
+  one data subject. Never reads content.
+- **Haris** — lineage-aware mediation, ENFORCE.
 
-The reference point is now **measured** instead (`leak_check.py`): a scenario *leaks* when
-content reaching an unauthorised recipient still carries an injected identifier. The same rule
-scores every arm, so success means "the secret did not arrive" rather than "a detector said
-block". Measured on the untouched traffic: **120 of 192** attack scenarios leak — not 192.
-48 name no external recipient at all (policy violations, nothing egresses) and 24 carry no
-identifier to leak.
+The comparison is the result, not any single rate. The metadata heuristic **beats Haris on
+exfiltration** — a rule that never reads content cannot be defeated by rewriting content — and
+scores **zero on boundary crossings**, where Haris takes all of them. It also carries twice the
+false-positive rate, because it refuses the partner referral and the form template that Haris
+allows. Reading payloads is what buys those, and reading payloads is what encoding defeats.
+
+**Fairness of the baselines, stated because it favours us:** the scanner has no NER, since
+Presidio is Haris's own detector and lending it would make the comparison circular. It also
+inspects egress only — scanning internal hops would flag the legitimate source read in every
+scenario. Both are the charitable reading and both are documented in `baselines.py`.
+
+## The leak metric (`leak_check.py`)
+
+Outcome-based, and independent of every detector's verdict. A scenario leaks when, in what an
+arm actually **delivered**:
+
+1. **recipient** — content reaching an unauthorised recipient still carries an injected
+   identifier;
+2. **subject** — an identifier belonging to subject X appears in a message declared about
+   subject Y, wherever it was addressed;
+3. **scope** — an identifier belonging to X reaches a partner whose agreement does not cover X.
+
+Rules 2 and 3 were added because rule 1 could not express those threat classes at all: an
+authorised recipient can never register as a leak under it, so "internal recipient, wrong data
+subject" was unscoreable rather than merely hard. Each was verified additive — firing on no
+family that existed before it — and that null result is the evidence the metric was extended
+rather than tuned.
+
+**Two identifiers are deliberately NOT scored.** The `fact` (a condition, an account status)
+is a statement about the world as much as about a person and appears in guidance that
+identifies nobody. The `subject` label is a pseudonymous session key that means nothing outside
+the system. Both exclusions cost us on paper — the second alone moved exfiltration prevention
+from 66% to 73% — and both are corrections, not conveniences. A deployment whose subject key IS
+an identifier must keep it in scope; that is a configuration note.
+
+**Why outcome-based matters.** Four scenarios are `stopped=True` and still leak: redaction is a
+*change* guard rather than a completeness guard, so a message carrying two identifiers where
+only one is recognised ships partially scrubbed and the verdict reads "redacted". A
+verdict-based metric would have scored all four as successes.
 
 ## Label consistency check (`oracle.py`)
 
 `label_consistency_check(scenario) -> (bool, method)`, using only injected facts + traffic:
-cross-subject (two subjects in one session) · bad-token (missing/wrong token vs the known
-registry) · identifier-egress (a known identifier reaches an unauthorized recipient, **exact or
-normalized** — the normalized check catches the obfuscated class) · else paraphrase-by-construction.
-It re-derives **all 312 labels**, **92% from traffic**; only paraphrase rests on construction.
+cross-subject · bad token · subject forgery · partner scope · identifier egress (exact or
+normalised). Every family but one is labelled **from traffic**.
 
-That agreement is *not* evidence the check works — it reads the facts the generator wrote, so
-it cannot disagree on a corpus the generator built correctly. What does establish something is
-`tests/test_label_check_mutation.py`: it defuses one attack property at a time (redirect the
-egress to an authorised address, strip the identifiers, supply the correct token, collapse two
-subjects into one) and asserts the label flips, plus one test planting a secret into benign
-traffic and asserting it flips the other way. A check that can fail is worth something; one
-that cannot is decoration.
+The exception is `forged_session_scope`, and it cannot be otherwise: its traffic is
+byte-for-byte identical to a legitimate ward round, because the attacker wrote a declaration
+that looks exactly like a true one. `external_paraphrase` used to sit here too and no longer
+does — task M3 gave it identifiers a check can find.
 
-## Metrics (`runner.py` + `simulate.py` JSON export)
+Agreement with the generator is *not* evidence the check works. What establishes something is
+`tests/test_label_check_mutation.py`: it defuses one attack property at a time and asserts the
+label flips. A check that can fail is worth something; one that cannot is decoration. That
+suite is what caught the paraphrase family still returning "attack" after every identifier was
+stripped out of it.
 
-Overall and broken down by **leak-style / domain / topology / difficulty / family**:
-leak-prevention (enforce), detection (monitor), false-positive (benign wrongly stopped),
-utility (benign delivered unharmed), latency (avg + p95 per hop).
+## Metrics (`runner.py`, `stats.py`)
 
-**Difficulty gradient (data-exfiltration threat).** A derived axis over the exfiltration
-attacks showing how detection degrades as the attacker hides the leaked identifier —
-**easy** (`external_verbatim`, `external_derived`: exact token present) →
-**medium** (`external_obfuscated`: identifier trivially reformatted) →
-**hard** (`external_paraphrase`: semantically reworded, no literal token). This is an
-*additive reporting view* — it re-groups existing scenarios, adds no new ones and changes
-no numbers.
+**Two headline claims, two denominators.** Exfiltration prevention over the scenarios where an
+identifier reaches an outside address; boundary-crossing prevention over the violations where
+nothing leaves the system. Reported apart because a reader hearing "leak prevention"
+understands the first, and pooling them lets a combined figure hide that the two point in
+opposite directions across arms.
 
-It was described here as a "graceful degradation curve (100% → 42% → 0%)" until 2026-08-24.
-Both halves of that are now wrong, and the correction matters more than the numbers:
+**Every rate carries a 95% bootstrap interval.** Percentages computed from 4 observations and
+from 264 were being printed in the same format. Degenerate samples fall back to the rule of
+three, because a naive bootstrap reports [0-0] for a family it only ever saw fail. Rungs whose
+interval is too wide to quote are flagged in the output.
 
-  * The 42% was **matcher brittleness, not attacker skill**. `external_obfuscated` only
-    reformats the identifier (`MRN-0001` → `M R N 0 0 0 1`); once the info-flow matcher
-    normalised separators, medium went to 100%. A "difficulty" axis that moves when you fix
-    a bug in the detector was measuring the detector, not the attack. Both arms are
-    reproducible side by side — `python -m demo_app.eval.matcher_delta` restores the old
-    exact-substring rule and re-runs the corpus: 42% → 100% detection, 0% → 100% prevention
-    on that family, with the false-positive rate unchanged at 24/120 in both.
-  * The remaining 0% is not a hard tier either. Verified 2026-08-24: the `external_paraphrase`
-    messages contain **no identifier at all**, so there is nothing present to leak. Scoring
-    them as missed detections invents a weakness.
+**The ladders are reported as shapes, not values.** At n=4 per rung the intervals span most of
+the range; what the obfuscation ladder shows is the ORDER — layout changes recovered by
+normalisation, encodings not — and what the rewrite chain shows is which identifier detection
+was resting on. Both are in `report/RESULTS.md`.
 
-So the honest shape is **100% · 100% · 0%** — a cliff at a family that carries no secret,
-not a curve. Keep the axis for the reporting view, but do not read it as evidence that Haris
-degrades gracefully under obfuscation; the corpus contains no attack it fails to stop. Task K
-(attack families a metadata heuristic cannot catch) is what would give this axis real hard
-cases, and only then does "motivates the semantic agent" mean anything.
+**Latency has its own harness** (`latency.py`): a no-agents floor arm, one warm-up scenario per
+family, three repetitions, median with IQR, and the CPU printed. The runner's by-product
+latency figure had none of that and should not be quoted. Building it properly surfaced a real
+defect — both PII-consuming agents were constructing their own detector per scenario, and a
+cold `analyze()` costs 1686 ms against 4.4 ms warm, so every Presidio latency figure the project
+had produced was measuring model initialisation.
 
-## Results snapshot (Presidio off, seed 23)
+## Seed sensitivity (`seed_sweep.py`)
 
-**Regenerate this block whenever the numbers move** — `python -m demo_app.eval.simulate`.
-It was last stale for two days after the normalisation fix, still quoting 80% / 42% and a
-per-domain spread that no longer existed, which is precisely the failure mode the rest of
-this document is about. Current, verified 2026-08-24:
-
-    scenarios 312 (attacks 192 · benign 120)
-
-    corpus (measured, not asserted):
-      144 of 192 attack scenarios address anything outside at all
-      120 of 192 actually leak with no mediation — 48 never egress, 24 carry no identifier
-
-    leak prevention 120/120 = 100% of the scenarios that actually leak
-    (verdict-based 168/192 = 88%, a denominator containing 72 that cannot leak)
-    detection 88% · false-positive 20% · utility 80% · ~0.1 ms/hop structured-only
-
-    by leak style : verbatim/derived/credential/obfuscated 100% · paraphrase 0%
-    by domain     : hospital / finance / hr / education all 88 · 88 · 20
-    by topology   : chain / branch / star all 88 · 88 · 20
-    by difficulty : easy 100% · medium 100% · hard 0%  — a cliff, not a curve
-    false positives confined to authorized_external (a partner never configured; task I2)
-
-**Honest reading, and it is not flattering.** Haris prevents every leak that actually
-occurs in this corpus. That is a statement about the corpus, not about Haris: nothing in
-312 scenarios defeats it, so the evaluation cannot show where it breaks. The per-domain and
-per-topology spreads that used to look like evidence of generalisation were Faker
-coin-flips; they are now identical across every cell, which is what "the axis measures
-nothing" looks like. Tasks K and L (attack families a metadata heuristic cannot catch, and
-reference arms to compare against) are what would make these numbers mean something.
-
-The aggregate rates depend on the family mix, so the **per-class breakdowns are the real result**.
+Changing the seed redraws every name, record id and credential while leaving the structure of
+every family identical. Across seeds 23–27 the Presidio-OFF rates are invariant, which is
+expected — the structural checks do not read names — and means the reported numbers are not an
+artefact of one draw. It says nothing about generalisation, and the module says so. With a
+single seed it reports UNKNOWN rather than "invariant", because a spread computed from one
+sample is zero by construction.
 
 ## Layout
 
     demo_app/eval/
-      domains.py     # Domain dataclass + specs + build_agents() (per-domain config)
-      generate.py    # scenario generator: families, Faker secret injection, leak styles
-      oracle.py         # label consistency check (exact + normalized)
-      leak_check.py     # outcome-based leak metric, independent of any detector
+      domains.py        # Domain dataclass + specs + build_agents(); one shared PIIDetector
+      generate.py       # scenario generator: families, formats, phrasings, ladders
+      oracle.py         # label consistency check
+      leak_check.py     # outcome-based leak metric: recipient, subject, scope
       external_check.py # third-party confirmation via detect-secrets
+      baselines.py      # the three non-Haris arms + the four-arm comparison
+      stats.py          # bootstrap confidence intervals
+      latency.py        # mediation cost with a floor arm (task O3)
+      seed_sweep.py     # seed sensitivity
       golden.py         # per-family regression guard (golden_rates.json)
-      runner.py      # two Haris arms (monitor/enforce) + the measured unmediated
-                     #   reference, plus metrics and breakdowns
-      simulate.py    # one-command entry point + JSON export
+      figures.py        # report figures, drawn as SVG from the harness
+      runner.py         # the two Haris arms + metrics and breakdowns
+      simulate.py       # one-command entry point + JSON export
+
+## Known limits
+
+- **The corpus is authored by us.** Every rate bounds performance on the threat classes we
+  modelled. That limit applies to all four arms equally, which is why the differences between
+  them carry more weight than any single figure.
+- **`split_identifier` is an architectural limit, not a threshold.** Lineage records what a
+  session read and whether it resurfaces, not whether fragments across messages compose.
+  Closing it needs the matcher to consider a session's egress traffic jointly, which is a
+  different design. It is the one attack family where a baseline beats Haris.
+- **`forged_session_scope` is the price of honouring a declared scope.** `session_scope` is
+  sender-supplied, and THREAT_MODEL.md §2.3 treats that whole class as attacker-controllable.
+  The remedy is binding the field at the interception adapter, as E1/E2 did for `receiver` —
+  deployment work, not agent work.
+- **`internal_handoff` is a false positive we keep.** Relaxing `flag_unknown_destination` would
+  let an attacker disable egress control by removing one metadata key. Binding `recipient` at
+  the adapter removes the cost without giving up the property; a test demonstrates it.
+- **Partial redaction.** Four scenarios ship with one identifier scrubbed and another intact,
+  and the verdict reads "redacted".
+- **The encoding rungs are unfixed.** Homoglyphs and HTML entities render as the original
+  identifier to a human reviewer, which is worse than a silent miss. NFKD normalisation plus
+  confusable folding would address them.
 
 ## Deferred / future work
 
-Real-LLM realism slice (a few LLM-driven scenarios + an independent LLM judge); the semantic agent
-that would close the paraphrase (and harden the obfuscation) gap; enabling Presidio in CI for the
-Secrets/PII contribution and a realistic (~11 ms) latency figure.
+Real-LLM realism slice (LLM-driven scenarios + an independent LLM judge); the semantic agent
+that would close the paraphrase gap without Presidio; a multi-seed Presidio-ON sweep to
+quantify NER recall variation (finding PA-3: non-Anglo surnames are recognised less reliably);
+and benign traffic we did not author, which is the single largest improvement available to the
+false-positive claim.
 
-Additional evasion techniques Haris does not yet handle — named here as future work rather than
-scored, because their ground truth would rely on construction (no literal token survives), which
-would dilute the eval's ~92% traffic-verified independence: **encoded** identifiers (base64/hex),
-identifiers **split across messages**, and **homoglyph/zero-width** obfuscation. A normalization +
-reassembly pre-pass on the info-flow agent would address these; they'd extend the "hard" tier of
-the difficulty gradient.
+**A note on what used to be in this section.** It listed base64 encoding, split identifiers and
+homoglyph obfuscation as evasions we would name rather than score, on the grounds that their
+ground truth would rest on construction and dilute the traffic-verified proportion. All three
+are now built and measured — the generator declares the transformed form as an identifier, so
+the metric can see a leak the naive identifier list would miss, and the label still derives
+from traffic. The original reasoning was wrong in a way worth recording: "we cannot score this
+without weakening our independence" turned out to mean "we had not worked out how to score it".
