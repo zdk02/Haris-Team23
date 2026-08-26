@@ -1,0 +1,176 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260826185959
+Username: DESKTOP-EM0MDN7\Batoul
+RunAs User: DESKTOP-EM0MDN7\Batoul
+Configuration Name: 
+Machine: DESKTOP-EM0MDN7 (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+Process ID: 12400
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is report\appendix\alarm-test.txt
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Get-Date
+
+Wednesday, August 26, 2026 6:59:59 PM
+
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws cloudwatch describe-alarms --alarm-names haris-dashboard-down `
+  --query "MetricAlarms[0].[StateValue,StateReason]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws ecs describe-services --cluster haris-cluster --services haris-service `
+  --query "services[0].[status,runningCount,desiredCount]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Get-Date
+
+Wednesday, August 26, 2026 7:01:50 PM
+
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws ecs update-service --cluster haris-cluster --service haris-service `
+  --desired-count 0 --region us-east-1 --profile haris --no-cli-pager `
+  --query "service.[desiredCount]" --output text
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) while ($true) {
+  $s = aws cloudwatch describe-alarms --alarm-names haris-dashboard-down `
+        --query "MetricAlarms[0].StateValue" --output text `
+        --region us-east-1 --profile haris
+  "{0}  {1}" -f (Get-Date -Format HH:mm:ss), $s
+  if ($s -eq "ALARM") { break }
+  Start-Sleep 20
+}
+19:02:33  OK
+19:02:54  OK
+19:03:15  OK
+19:03:36  OK
+19:03:58  OK
+19:04:19  OK
+19:04:40  OK
+19:05:01  OK
+19:05:23  OK
+19:05:44  OK
+19:06:06  OK
+19:06:27  OK
+19:06:49  OK
+19:07:10  OK
+19:07:32  OK
+19:07:53  OK
+19:08:14  OK
+19:08:35  OK
+19:08:56  OK
+19:09:18  OK
+19:09:39  OK
+19:10:00  OK
+19:10:21  OK
+19:10:43  OK
+19:11:04  OK
+19:11:25  OK
+19:11:46  OK
+19:12:08  OK
+19:12:29  OK
+19:12:50  ALARM
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Get-Date
+
+Wednesday, August 26, 2026 7:14:25 PM
+
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws cloudwatch describe-alarms --alarm-names haris-dashboard-down `
+  --query "MetricAlarms[0].[StateValue,StateReason,StateUpdatedTimestamp]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws ecs describe-services --cluster haris-cluster --services haris-service `
+  --query "services[0].[runningCount,desiredCount]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) curl.exe -s -o NUL -w "https apex -> %{http_code}`n" https://haris-monitor.com
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Get-Date
+
+Wednesday, August 26, 2026 7:15:20 PM
+
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws ecs update-service --cluster haris-cluster --service haris-service `
+  --desired-count 1 --region us-east-1 --profile haris --no-cli-pager `
+  --query "service.[desiredCount]" --output text
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) while ($true) {
+  $s = aws cloudwatch describe-alarms --alarm-names haris-dashboard-down `
+        --query "MetricAlarms[0].StateValue" --output text `
+        --region us-east-1 --profile haris
+  "{0}  {1}" -f (Get-Date -Format HH:mm:ss), $s
+  if ($s -eq "OK") { break }
+  Start-Sleep 30
+}
+19:15:35  ALARM
+19:16:07  ALARM
+19:16:38  ALARM
+19:17:10  ALARM
+19:17:42  ALARM
+19:18:13  ALARM
+19:18:44  ALARM
+19:19:15  ALARM
+19:19:47  OK
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Get-Date
+
+Wednesday, August 26, 2026 7:25:11 PM
+
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws cloudwatch describe-alarms --alarm-names haris-dashboard-down `
+  --query "MetricAlarms[0].[StateValue,StateReason,StateUpdatedTimestamp]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws ecs describe-services --cluster haris-cluster --services haris-service `
+  --query "services[0].[status,runningCount,desiredCount]" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) aws elbv2 describe-target-health `
+  --target-group-arn (aws elbv2 describe-target-groups --names haris-tg `
+     --query "TargetGroups[0].TargetGroupArn" --output text --region us-east-1 --profile haris) `
+  --query "TargetHealthDescriptions[].TargetHealth.State" --output text `
+  --region us-east-1 --profile haris --no-cli-pager
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) curl.exe -s -o NUL -w "https apex -> %{http_code}`n" https://haris-monitor.com
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) curl.exe -s -o NUL -w "https www  -> %{http_code}`n" https://www.haris-monitor.com
+
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+PS C:\Users\Batoul\Desktop\Haris-Team23>
+(.venv) Stop-Transcript
+**********************
+Windows PowerShell transcript end
+End time: 20260826192519
+**********************

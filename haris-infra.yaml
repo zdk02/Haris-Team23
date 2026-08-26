@@ -3,8 +3,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Haris operator dashboard — network, load balancer, identity and compute.
   One Fargate task behind an internet-facing ALB across two availability zones.
-  The ECR repository and the two Secrets Manager secrets are deliberately NOT in
-  this stack: they hold state that should outlive it, and they are created by
+  The ECR repository and the three Secrets Manager secrets are deliberately NOT
+  in this stack: they hold state that should outlive it, and they are created by
   hand so they can be inspected and screenshotted for the report appendix.
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,16 @@ Parameters:
       tamper-evident, because anyone able to write the log can recompute it.
       Held separately from the log it protects — a key stored beside the thing
       it guards protects nothing.
+
+  AlertWebhookSecretArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret holding the Slack/Discord incoming
+      webhook URL. A webhook URL is a bearer credential — anyone holding it can
+      post to the channel — so it is a secret, not an environment variable, and
+      it never appears in this template or in `describe-task-definition` output.
+      Without it the deployed Notifier's webhook channel is a silent no-op: it
+      counts every send as `skipped`, which is visible in the operational log.
 
   CertificateArn:
     Type: String
@@ -434,15 +444,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/haris:*
-              # Two ARNs, enumerated. Not a prefix, not a wildcard: this role
-              # can read exactly these two secrets and nothing else in the
+              # Three ARNs, enumerated. Not a prefix, not a wildcard: this role
+              # can read exactly these three secrets and nothing else in the
               # account's Secrets Manager.
-              - Sid: ReadTheTwoTaskSecretsOnly
+              - Sid: ReadTheThreeTaskSecretsOnly
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource:
                   - !Ref DashboardSecretArn
                   - !Ref AuditKeySecretArn
+                  - !Ref AlertWebhookSecretArn
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -499,17 +510,21 @@ Resources:
           # CORS and XSRF protection therefore stay at their secure defaults,
           # and debug logging is off in normal operation.
           #
-          # Both values below are resolved from Secrets Manager by the execution
-          # role at task start, so neither appears in this template, the image,
-          # version control, or `describe-task-definition` output.
+          # All three values below are resolved from Secrets Manager by the
+          # execution role at task start, so none appears in this template, the
+          # image, version control, or `describe-task-definition` output.
           #
           #   HARIS_DASHBOARD_TOKEN - gates the operator console (authentication)
           #   HARIS_AUDIT_KEY       - keys the audit hash chain (integrity)
+          #   HARIS_ALERT_WEBHOOK   - where runtime alerts are pushed (notification)
           #
-          # They answer different questions: who may READ the audit log, and
-          # whether the log can be silently REWRITTEN. Neither substitutes for
+          # The first two answer different questions: who may READ the audit log,
+          # and whether the log can be silently REWRITTEN. Neither substitutes for
           # the other, and without the second the chain is corruption-evident
-          # only, which is weaker than THREAT_MODEL.md section 2 claims.
+          # only, which is weaker than THREAT_MODEL.md section 2 claims. The
+          # third is a bearer credential for a chat channel: without it the
+          # Notifier's webhook channel is a silent no-op that counts every send
+          # as `skipped`.
           #
           # Note: secrets are read ONCE at task start. Rotating a value in
           # Secrets Manager does not reach a running container - that needs a
@@ -520,6 +535,8 @@ Resources:
               ValueFrom: !Ref DashboardSecretArn
             - Name: HARIS_AUDIT_KEY
               ValueFrom: !Ref AuditKeySecretArn
+            - Name: HARIS_ALERT_WEBHOOK
+              ValueFrom: !Ref AlertWebhookSecretArn
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -600,7 +617,7 @@ Outputs:
 
 # ---------------------------------------------------------------------------
 # Created by hand, deliberately outside this stack — recorded here so the
-# deployment is reproducible from this file plus these three commands.
+# deployment is reproducible from this file plus these four commands.
 #
 # They are kept out of the stack because they hold state that must survive
 # `delete-stack`: the image a rollback would need, and secrets whose loss is
@@ -617,6 +634,10 @@ Outputs:
 #   aws secretsmanager create-secret --name haris/audit-key \
 #       --description "HMAC key for the Haris audit hash chain" \
 #       --secret-string <256-bit value from a CSPRNG>
+#
+#   aws secretsmanager create-secret --name haris/alert-webhook \
+#       --description "Slack/Discord incoming webhook for Haris runtime alerts" \
+#       --secret-string <the webhook URL>
 #
 # Teardown is the mirror image and is scripted in teardown.ps1, which refuses
 # to run unless sts:GetCallerIdentity returns this account — `delete-stack`
