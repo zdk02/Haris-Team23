@@ -1,4 +1,4 @@
-"""Taint MATCHING tests — the Aug 22 rework (C1-C5).
+"""Taint MATCHING tests — the Aug 22 rework (C1-C5) and the Aug 26 prose pass (N1).
 
 `test_infoflow_module9.py` covers the destination rule and the detector seam. This file
 covers the other half: *how* a tag is decided to have resurfaced, and what the extractor
@@ -77,11 +77,64 @@ def test_a_prose_field_value_does_not_taint_the_session():
 
 
 def test_identifying_keys_are_configurable_not_hardcoded():
-    """The allow-list is a constructor argument. A deployment with different field names
-    configures it; nothing about the clinical default is baked in."""
+    """The structured allow-list is a constructor argument. A deployment with different
+    field names configures it; nothing about the clinical default is baked in.
+
+    Asserted against `_structured_tags` rather than `_extract_tags` since task N1. The
+    latter now unions a PROSE extractor, which finds a capitalised name run whatever
+    structured keys are configured — that is the whole point of the prose pass, since a
+    record arriving as a narrative note never uses `Key: value` at all. So this test has
+    to name the layer it is about, and the layer is the structured allow-list.
+    """
     agent = InformationFlowAgent(detector=None, identifying_keys={"status"})
-    assert "active" in agent._extract_tags(RECORD)
-    assert "Jane Doe" not in agent._extract_tags(RECORD)
+    assert "active" in agent._structured_tags(RECORD)
+    assert "Jane Doe" not in agent._structured_tags(RECORD)
+
+
+# --- N1: the prose pass --------------------------------------------------------
+
+def test_a_narrative_record_still_taints_the_session():
+    """Task N1. A clinician's note is not `Key: value`, and until the prose extractor
+    existed it produced NO tags at all — with Presidio off, a record arriving as prose
+    protected nothing. Measured in the `record_format` family: structured and JSON were
+    caught 100% of the time, narrative and chat 0%."""
+    narrative = ("Saw Jane Doe this morning (patient-A), MRN MRN-0001. "
+                 "Ongoing Type 2 diabetes; review in two weeks.")
+    v = _check("Following up on MRN-0001 for Jane Doe.", source=narrative)
+    assert v.label is Label.FLAG
+
+
+def test_a_chat_transcript_still_taints_the_session():
+    """The other unparseable shape. Colons everywhere, none of them keys — the structured
+    extractor sees a timestamp and a username where it expects a field name."""
+    chat = ("09:12 nurse_a: patient-A is in bay three\n"
+            "09:13 nurse_a: MRN-0001, Jane Doe, Type 2 diabetes")
+    v = _check("Following up on MRN-0001 for Jane Doe.", source=chat)
+    assert v.label is Label.FLAG
+
+
+def test_the_prose_pass_finds_a_credential_in_free_text():
+    """A key pasted into a note or a chat line is how one actually escapes. Ordinary
+    prose does not produce long uppercase-alphanumeric runs, which is what keeps this
+    pattern from firing on English."""
+    key = "AKIAJT4FABUTC54WWB3A"
+    assert key in AGENT._prose_tags(f"Portal key for the transfer is {key}.")
+
+
+def test_a_sentence_initial_word_does_not_swallow_the_name():
+    """'Saw Jane Doe' capitalises into one run. The extractor emits the run AND the run
+    without its first word, so the name is still a tag on its own — otherwise a narrative
+    note beginning with a verb would hide every name in it."""
+    tags = AGENT._prose_tags("Saw Jane Doe this morning.")
+    assert "Jane Doe" in tags
+
+
+def test_the_prose_pass_does_not_taint_on_ordinary_sentences():
+    """The cost side. An over-eager extractor taints a session on its own coordination
+    notes, so the patterns are deliberately narrow: an identifier shape, a credential
+    shape, a run of capitalised words. A plain sentence yields nothing."""
+    assert AGENT._prose_tags("The clinic reopens on Monday and the rota is updated.") \
+        <= {"Monday"}
 
 
 # --- C2/C4: word boundaries on the token pass ----------------------------------

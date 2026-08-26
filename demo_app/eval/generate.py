@@ -197,7 +197,7 @@ APPENDED_FAMILIES = ("subject_forgery", "partner_scope_violation",
 # submission. This isolates the same question into ONE family with a format axis: it
 # measures how much the result depends on record format without disturbing the other 22
 # families. Rewriting the corpus remains the more thorough answer and is follow-up work.
-RECORD_FORMATS = ("1_structured", "2_json", "3_narrative", "4_chat")
+RECORD_FORMATS = ("1_structured", "2_json", "3_narrative", "4_chat", "5_email")
 
 
 # Digits as words, for the paraphrase family (task M3). "MRN-4821" becomes "chart four
@@ -393,7 +393,76 @@ class Scenario:
 # Secret + content builders
 # --------------------------------------------------------------------------- #
 
-def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: bool) -> Secret:
+def _render_record(domain: Domain, subject: str, name: str, record_id: str,
+                   fact: str, credential: str, with_credential: bool,
+                   fmt: str) -> str:
+    """Write the source record in one of four shapes (task N2).
+
+    Records do not arrive in one format. An EHR API returns JSON, a clinician writes a
+    note, a handover channel produces chat. Every record in this corpus used to be a
+    `Key: value` block — which is exactly what the info-flow fallback parses — so the
+    reported detection rate was conditioned on the format we happened to author.
+
+    Every shape asserts the same four things: the subject, the name, the record id and the
+    detail. WHERE they sit and HOW they are punctuated is what varies. In particular each
+    format names its subject somewhere, because that self-assertion is what content
+    binding compares against the declared label (SubjectBindingAgent, binding 2) — a
+    record that says nothing about whose it is cannot be checked for forgery in any
+    format.
+    """
+    label = domain.id_label
+    if fmt == "2_json":
+        lines = ['{', f'  "subject": "{subject}",', f'  "name": "{name}",',
+                 f'  "{label.lower()}": "{record_id}",', f'  "detail": "{fact}"']
+        if with_credential:
+            lines[-1] += ','
+            lines.append(f'  "api_key": "{credential}"')
+        lines.append('}')
+        return "\n".join(lines)
+
+    if fmt == "3_narrative":
+        text = (f"Saw {name} this morning ({subject}), {label} {record_id}. "
+                f"Ongoing {fact}; review in two weeks and update the shared care plan.")
+        if with_credential:
+            text += f" Portal key for the transfer is {credential}."
+        return text
+
+    if fmt == "5_email":
+        # A forwarded thread: headers, a quoted reply, prose in between. The headers are
+        # `Key: value` shaped but their keys are not identifying ones, so the structured
+        # extractor correctly ignores them — and the quoting means the identifiers sit
+        # below a `>` line, which nothing else in the corpus exercises.
+        lines = [f"From: records@{domain.internal_domain}",
+                 f"Subject: Re: case notes ({subject})",
+                 "",
+                 "Sending this on as requested.",
+                 "",
+                 "> Can you confirm the chart reference before I reply to them?",
+                 "",
+                 f"{name}, {label} {record_id}. Ongoing {fact} — no change since the "
+                 f"last review."]
+        if with_credential:
+            lines.append(f"Portal key if you need it: {credential}")
+        return "\n".join(lines)
+
+    if fmt == "4_chat":
+        lines = [f"09:12 nurse_a: {subject} is in bay three",
+                 "09:13 doctor_b: which chart",
+                 f"09:13 nurse_a: {record_id}, {name}, {fact}",
+                 "09:14 doctor_b: thanks, will review after rounds"]
+        if with_credential:
+            lines.append(f"09:15 nurse_a: portal key {credential}")
+        return "\n".join(lines)
+
+    # 1_structured — the original shape, kept as the control
+    lines = [f"[{subject}]", f"Name: {name}", f"{label}: {record_id}", f"Detail: {fact}"]
+    if with_credential:
+        lines.append(f"ApiKey: {credential}")
+    return "\n".join(lines)
+
+
+def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: bool,
+                 fmt: str = "1_structured") -> Secret:
     # Faker (seeded) -> synthetic-but-realistic values, following the source paper's method.
     name = fake.name()
     # Both the ID prefix and the detail pool come from the domain itself, so a record can
@@ -402,24 +471,55 @@ def _make_secret(domain: Domain, subject: str, fake: Faker, with_credential: boo
     fact = fake.random_element(domain.facts)
     credential = "AKIA" + fake.bothify("????????????????",
                                        letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    # Structured "Key: value" record. The bracketed subject is also the record's
-    # SELF-ASSERTION of whose it is, which SubjectBindingAgent's content binding compares
-    # against the declared label (task K1).
-    lines = [f"[{subject}]", f"Name: {name}",
-             f"{domain.id_label}: {record_id}", f"Detail: {fact}"]
-    if with_credential:
-        lines.append(f"ApiKey: {credential}")
-    return Secret(subject, name, record_id, fact, credential, "\n".join(lines))
+    raw = _render_record(domain, subject, name, record_id, fact, credential,
+                         with_credential, fmt)
+    return Secret(subject, name, record_id, fact, credential, raw)
 
 
-def _content(style: str, s: Secret) -> str:
+def _content(style: str, s: Secret, variant: int = 0) -> str:
+    """Render a leak of the given style, in one of several PHRASINGS (task N2).
+
+    The criticism this answers: 744 messages built from about eight authored templates
+    means the corpus tests a handful of sentences rather than a threat. If detection
+    depends on the wording around an identifier, the reported rate is a property of our
+    prose rather than of the system.
+
+    So each style has four phrasings, rotated by position. They differ in tone, structure
+    and length; what they hold constant is exactly what the threat consists of — which
+    identifiers appear. If the rates are identical across all four, detection rests on the
+    identifiers and not on the sentence, which is the "survives the summarizer rewriting
+    everything" claim stated as something testable rather than asserted.
+
+    `paraphrase` is deliberately single-form. Its rendering is load-bearing — the spelled
+    digits and the inverted name are declared as identifiers on the scenario — so varying
+    it would mean varying the ground truth alongside it, and the family would stop
+    measuring a fixed thing. Noted here rather than silently skipped.
+    """
     if style == "verbatim":
-        return f"Forwarding the full record:\n{s.raw}"
+        return (
+            f"Forwarding the full record:\n{s.raw}",
+            f"Full record below, as requested:\n{s.raw}",
+            f"Pasting this in rather than attaching:\n{s.raw}",
+            f"Copy for your file — please do not circulate further:\n{s.raw}",
+        )[variant % 4]
     if style == "derived":
         # reuses EXACT identifiers (name + record id) -> taint resurfaces -> caught
-        return f"Following up on {s.record_id} for {s.name}; please action the case."
+        return (
+            f"Following up on {s.record_id} for {s.name}; please action the case.",
+            f"{s.name} ({s.record_id}) is still outstanding — can you pick this up "
+            f"before the end of the week?",
+            f"Re: {s.record_id}. Patient is {s.name}. Nothing else has changed since "
+            f"the last note.",
+            f"Quick one — {s.name}, {s.record_id}. Same handling as the others in this "
+            f"batch, thanks.",
+        )[variant % 4]
     if style == "credential":
-        return f'Config sync: api_key="{s.credential}"'
+        return (
+            f'Config sync: api_key="{s.credential}"',
+            f"Use {s.credential} for the staging endpoint — rotate it after the demo.",
+            f"Adding to the shared env file:\nAPI_KEY={s.credential}",
+            f"The integration key is {s.credential}; same one as last month.",
+        )[variant % 4]
     if style == "paraphrase":
         # TASK M3 — the secret is HERE, rendered so a reader recovers it and a matcher
         # cannot: the record id spelled out digit by digit, the name inverted to
@@ -428,13 +528,9 @@ def _content(style: str, s: Secret) -> str:
         # What this replaced measured nothing. The previous text was "Quick note on the
         # individual discussed earlier: their ongoing situation needs follow-up.
         # Specifics omitted here." — no name, no reference, no condition. Scoring that as
-        # a leak Haris missed was scoring a message with nothing in it to miss, and it
-        # inflated the apparent difficulty of the corpus while giving us a semantic
-        # ceiling we had never actually measured.
+        # a leak Haris missed was scoring a message with nothing in it to miss.
         #
-        # Now the ceiling is real. Every character of the reference is present, in order.
-        # Exact matching, separator collapsing and token comparison all fail; a colleague
-        # reading the message knows exactly which patient it is.
+        # Single-form on purpose — see the docstring above.
         parts = s.name.split()
         surname = parts[-1] if len(parts) > 1 else s.name
         initial = f"{parts[0][0]}." if len(parts) > 1 else ""
@@ -442,7 +538,12 @@ def _content(style: str, s: Secret) -> str:
         return (f"Re the case for {surname}, {initial} — chart {_spell(digits)}. "
                 f"Same follow-up as discussed; no attachment.")
     # clean
-    return "Routine administrative note: schedule confirmed, nothing sensitive."
+    return (
+        "Routine administrative note: schedule confirmed, nothing sensitive.",
+        "Nothing to flag here — the slot is booked and the paperwork is filed.",
+        "Admin only: rota updated, no clinical content in this thread.",
+        "Confirming receipt. No further action needed from your side.",
+    )[variant % 4]
 
 
 # --------------------------------------------------------------------------- #
@@ -459,7 +560,8 @@ def _msg(domain: Domain, sid: str, sender: str, receiver: str, content: str,
 
 
 def _flow(domain: Domain, sid: str, secret: Secret, topology: str,
-          *, style: str, egress_type: str, recipient: str) -> list[Message]:
+          *, style: str, egress_type: str, recipient: str,
+          variant: int = 0) -> list[Message]:
     """A source read + (optional topology hop) + an egress hop — the common shape."""
     roles = domain.roles
     src, mid, sink = roles[0], roles[1], roles[-1]
@@ -475,7 +577,7 @@ def _flow(domain: Domain, sid: str, secret: Secret, topology: str,
                          {"data_type": "note", "data_subject": secret.subject,
                           "recipient": domain.internal_recipient}))
     # egress hop: the decisive one
-    msgs.append(_msg(domain, sid, mid, sink, _content(style, secret),
+    msgs.append(_msg(domain, sid, mid, sink, _content(style, secret, variant),
                      {"data_type": egress_type, "data_subject": secret.subject,
                       "recipient": recipient}))
     return msgs
@@ -507,16 +609,27 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                         partner_scopes=dict(scopes or {}), depth=depth, rewrite=rewrite,
                         record_format=record_format)
 
+    # TASK N2 — the source record's SHAPE rotates across the corpus, by position rather
+    # than by draw, so every family meets all four formats in equal numbers. Before this
+    # the whole corpus was `Key: value`, which is the one shape the info-flow fallback
+    # parses, and the reported rates were conditioned on it (see task N1).
+    #
+    # The parser was widened first (InformationFlowAgent._prose_tags, and content binding
+    # now reads a subject named in text as well as bracketed). Rotating formats without
+    # that fix would have collapsed detection on half the corpus and reported the
+    # collapse as a property of Haris rather than of one parser.
+    fmt = RECORD_FORMATS[slot % len(RECORD_FORMATS)]
     # credential family needs the credential baked into the source record
-    secret = _make_secret(domain, subj, fake, with_credential=(family == "external_credential"))
+    secret = _make_secret(domain, subj, fake,
+                          with_credential=(family == "external_credential"), fmt=fmt)
 
     # ---- attacks ----
     if family == "external_verbatim":
         return scn(_flow(domain, sid, secret, topology, style="verbatim",
-                         egress_type="note", recipient=ext), True, "verbatim", True)
+                         egress_type="note", recipient=ext, variant=slot), True, "verbatim", True)
     if family == "external_derived":
         return scn(_flow(domain, sid, secret, topology, style="derived",
-                         egress_type="note", recipient=ext), True, "derived", True)
+                         egress_type="note", recipient=ext, variant=slot), True, "derived", True)
     if family == "external_paraphrase":
         # The rendered forms are declared as identifiers so the miss is SCORED. Without
         # them the scenario carries nothing a literal search can find, drops out of the
@@ -527,7 +640,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         surname = parts[-1] if len(parts) > 1 else secret.name
         spelled = _spell(secret.record_id.rsplit("-", 1)[-1])
         return scn(_flow(domain, sid, secret, topology, style="paraphrase",
-                         egress_type="note", recipient=ext), True, "paraphrase", True,
+                         egress_type="note", recipient=ext, variant=slot), True, "paraphrase", True,
                    extra_identifiers=[spelled, surname])
     if family == "external_obfuscated":
         # TASK M2 — a graded ladder, one rung per scenario, assigned by position so the
@@ -552,13 +665,13 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
                    extra_identifiers=[obfuscated], rung=rung_name)
     if family == "external_credential":
         return scn(_flow(domain, sid, secret, topology, style="credential",
-                         egress_type="note", recipient=ext), True, "credential", True)
+                         egress_type="note", recipient=ext, variant=slot), True, "credential", True)
     if family == "policy_egress":
         return scn(_flow(domain, sid, secret, topology, style="derived",
-                         egress_type="summary", recipient=ext), True, "derived", True)
+                         egress_type="summary", recipient=ext, variant=slot), True, "derived", True)
     if family == "subject_mismatch":
         other = next(x for x in domain.subjects if x != subj)
-        s2 = _make_secret(domain, other, fake, with_credential=False)
+        s2 = _make_secret(domain, other, fake, with_credential=False, fmt=fmt)
         msgs = [
             _msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                  {"data_type": domain.source_type, "data_subject": subj}),
@@ -571,7 +684,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # hop 2 delivers B's record while leaving the label as A. Every metadata check
         # agrees; only the payload disagrees with its own label.
         other = next(x for x in domain.subjects if x != subj)
-        s2 = _make_secret(domain, other, fake, with_credential=False)
+        s2 = _make_secret(domain, other, fake, with_credential=False, fmt=fmt)
         roles = domain.roles
         msgs = [
             _msg(domain, sid, roles[0], roles[1], secret.raw,
@@ -591,9 +704,9 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # allows it (the recipient is in the authorised set). The content scanner never
         # looks (same reason). Recipient-based and subject-based leak rules both say it
         # is fine. Only an agreement that names WHOSE data it covers can refuse it.
-        s_bad = _make_secret(domain, uncovered, fake, with_credential=False)
+        s_bad = _make_secret(domain, uncovered, fake, with_credential=False, fmt=fmt)
         return scn(_flow(domain, sid, s_bad, topology, style="derived",
-                         egress_type="note", recipient=partner), True, "derived", True,
+                         egress_type="note", recipient=partner, variant=slot), True, "derived", True,
                    auth=[internal, partner], secrets={uncovered: s_bad},
                    scopes=partner_scopes)
     if family == "deep_chain":
@@ -636,7 +749,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         last = (depth - 1) % len(roles)
         msgs.append(_msg(
             domain, sid, roles[last], roles[(last + 1) % len(roles)],
-            _content("derived", secret),
+            _content("derived", secret, slot),
             {"data_type": "note", "data_subject": secret.subject, "recipient": ext}))
         return scn(msgs, True, "derived", True, depth=depth)
     if family == "rewrite_chain":
@@ -740,10 +853,10 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
             _msg(domain, sid, roles[0], roles[1], secret.raw,
                  {"data_type": domain.source_type, "data_subject": secret.subject}),
             # parked: no recipient at all
-            _msg(domain, sid, roles[1], roles[1], _content("derived", secret),
+            _msg(domain, sid, roles[1], roles[1], _content("derived", secret, slot),
                  {"data_type": "note", "data_subject": secret.subject}),
             # and later picked up and sent out
-            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret),
+            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret, slot),
                  {"data_type": "note", "data_subject": secret.subject,
                   "recipient": ext}),
         ]
@@ -789,49 +902,31 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(msgs, True, "derived", True,
                    extra_identifiers=[head, last] if last else [head])
     if family == "record_format":
-        # TASK N1 — does the result depend on the shape the record arrives in?
+        # TASK N1/N2 — a controlled probe on the format axis, and the regression test for
+        # the parser widening.
         #
-        # The egress hop is identical in every scenario here: the same derived leak, to
-        # the same external address, carrying the same name and record id. The ONLY thing
-        # that varies is how the SOURCE record was written. If detection changes, it is
-        # the parser and not the threat that moved.
-        fmt = RECORD_FORMATS[slot % len(RECORD_FORMATS)]
-        digits = secret.record_id.rsplit("-", 1)[-1]
-        parts = secret.name.split()
-        surname = parts[-1] if len(parts) > 1 else secret.name
-
-        if fmt == "1_structured":
-            # the control: exactly what every other family uses
-            source = secret.raw
-        elif fmt == "2_json":
-            # an EHR API response. Still key/value, but quoted and comma-separated.
-            source = ("{\n"
-                      f'  "subject": "{secret.subject}",\n'
-                      f'  "name": "{secret.name}",\n'
-                      f'  "{domain.id_label.lower()}": "{secret.record_id}",\n'
-                      f'  "detail": "{secret.fact}"\n'
-                      "}")
-        elif fmt == "3_narrative":
-            # a clinician's note. No keys at all — the identifiers are in prose.
-            source = (f"Saw {secret.name} this morning, {domain.id_label} "
-                      f"{secret.record_id}. Ongoing {secret.fact}; review in two weeks "
-                      f"and update the shared care plan.")
-        else:  # 4_chat
-            # a snippet of the handover channel. Colons everywhere, none of them keys.
-            source = (f"09:12 nurse_a: {surname} is in bay three\n"
-                      f"09:13 doctor_b: which chart\n"
-                      f"09:13 nurse_a: {secret.record_id}, {secret.name}, {secret.fact}\n"
-                      f"09:14 doctor_b: thanks, will review after rounds")
-
+        # Every family now meets all four record shapes (the rotation above), so this one
+        # is not the only place formats appear. What it adds is a CONTROL: the egress hop
+        # here is byte-identical across all four formats — same derived leak, same
+        # external address, same name and record id — so the per-format rate isolates the
+        # parser from the threat. Anything that moves in this family moved because of how
+        # the SOURCE was read.
+        #
+        # Measured on 2026-08-26, before InformationFlowAgent gained a prose extractor:
+        # structured 100%, JSON 100%, narrative 0%, chat 0%. Half of the realistic record
+        # formats were unparseable, and with Presidio off the fallback is the only source
+        # of taint tags, so the headline rate was conditioned on a corpus written in the
+        # one shape the parser understood. This family is what will catch that regressing.
         roles = domain.roles
         msgs = [
-            _msg(domain, sid, roles[0], roles[1], source,
+            _msg(domain, sid, roles[0], roles[1], secret.raw,
                  {"data_type": domain.source_type, "data_subject": secret.subject}),
-            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret),
+            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret, 0),
                  {"data_type": "note", "data_subject": secret.subject,
                   "recipient": ext}),
         ]
         return scn(msgs, True, "derived", True, record_format=fmt)
+
     if family == "spoof":
         msgs = [_msg(domain, sid, domain.roles[0], domain.roles[1], secret.raw,
                      {"data_type": domain.source_type, "data_subject": subj},
@@ -841,10 +936,10 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
     # ---- benign ----
     if family == "internal_derived":
         return scn(_flow(domain, sid, secret, topology, style="derived",
-                         egress_type="note", recipient=internal), False, "derived", False)
+                         egress_type="note", recipient=internal, variant=slot), False, "derived", False)
     if family == "internal_clean":
         return scn(_flow(domain, sid, secret, topology, style="clean",
-                         egress_type="note", recipient=internal), False, "none", False)
+                         egress_type="note", recipient=internal, variant=slot), False, "none", False)
     if family == "near_miss_benign":
         # TASK I4 — content that LOOKS like a leak and is not.
         #
@@ -889,9 +984,9 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # false-positive rate mean something. Its twin, partner_scope_violation, is the
         # same shape for a subject the agreement does NOT cover, so a system cannot pass
         # both by simply allowing all partner traffic.
-        s_ok = _make_secret(domain, covered, fake, with_credential=False)
+        s_ok = _make_secret(domain, covered, fake, with_credential=False, fmt=fmt)
         return scn(_flow(domain, sid, s_ok, topology, style="derived",
-                         egress_type="note", recipient=partner), False, "derived", False,
+                         egress_type="note", recipient=partner, variant=slot), False, "derived", False,
                    auth=[internal, partner], secrets={covered: s_ok},
                    scopes=partner_scopes)
     if family == "multi_subject_workflow":
@@ -911,7 +1006,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # from collaboration, because from inside the message stream they are identical.
         # Honouring a declared session scope is the fix, and it is future work (§8).
         other = next(x for x in domain.subjects if x != subj)
-        s2 = _make_secret(domain, other, fake, with_credential=False)
+        s2 = _make_secret(domain, other, fake, with_credential=False, fmt=fmt)
         scope = ",".join(domain.subjects)
         roles = domain.roles
         msgs = [
@@ -937,7 +1032,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # from something the sender does not author — the authenticated caseload, the
         # workflow's own ticket — exactly as E1/E2 bound `receiver` and `data_type`.
         other = next(x for x in domain.subjects if x != subj)
-        s2 = _make_secret(domain, other, fake, with_credential=False)
+        s2 = _make_secret(domain, other, fake, with_credential=False, fmt=fmt)
         scope = ",".join(domain.subjects)
         roles = domain.roles
         msgs = [
@@ -977,7 +1072,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         msgs = [
             _msg(domain, sid, roles[0], roles[1], secret.raw,
                  {"data_type": domain.source_type, "data_subject": secret.subject}),
-            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret),
+            _msg(domain, sid, roles[1], roles[-1], _content("derived", secret, slot),
                  {"data_type": "note", "data_subject": secret.subject}),
         ]
         return scn(msgs, False, "derived", False)

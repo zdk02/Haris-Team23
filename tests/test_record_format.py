@@ -9,13 +9,19 @@ depends on that in a way nothing measured.
 THE PROBE. Four source formats, one leak. The egress hop is byte-for-byte the same in all
 four scenarios: the same derived message, the same external address, the same name and
 record id. Only the SOURCE record changes shape — structured block, JSON payload,
-clinician's narrative, chat transcript. If detection moves, it is the parser that moved and
+clinician's narrative, chat transcript, forwarded email thread. If detection moves, it is the parser that moved and
 not the threat.
 
-DEVIATION FROM THE PLAN, STATED. N2 asks for the whole corpus to be rewritten in 3-5
-formats per domain. That would move every number in the report five days before submission.
-This isolates the same question into one family. Rewriting the corpus is the more thorough
-answer and remains follow-up work — the finding here tells you how much it would matter.
+WHAT IT FOUND, AND WHAT WAS DONE. First measurement: 100 / 100 / 0 / 0. Half of the
+realistic record formats were unparseable, so the reported rate was a property of how we
+had written the corpus. The parser was then widened — a prose extractor for
+identifier-shaped tokens, credentials and capitalised name runs, and content binding that
+reads a subject named in text as well as bracketed — and the whole corpus was rotated
+through all four formats in every family (task N2). All four are now caught.
+
+This family stays as the CONTROL and the regression guard. Every other family meets the
+four formats too, but only here is the egress hop held byte-identical across them, which
+is what isolates the parser from the threat.
 """
 from __future__ import annotations
 
@@ -47,11 +53,14 @@ def _rate(formats, fmt):
 # The probe is a fair one
 # --------------------------------------------------------------------------- #
 
-def test_every_format_is_represented_equally(formats):
+def test_every_format_is_represented(formats):
+    """Assigned by position, so the counts are within one of each other. They cannot be
+    exactly equal: five formats do not divide twenty-four scenarios, and forcing them to
+    would mean either dropping a format or padding the family for arithmetic's sake."""
     from collections import Counter
     counts = Counter(s.record_format for s in formats)
     assert set(counts) == set(RECORD_FORMATS)
-    assert len(set(counts.values())) == 1, counts
+    assert max(counts.values()) - min(counts.values()) <= 1, counts
 
 
 def test_the_egress_hop_is_identical_across_formats(formats):
@@ -75,6 +84,8 @@ def test_the_source_record_really_differs(formats):
     assert "{" in sources["2_json"]
     assert "Detail:" not in sources["3_narrative"]
     assert "nurse_a" in sources["4_chat"]
+    assert sources["5_email"].startswith("From:")
+    assert "\n>" in sources["5_email"], "the quoted reply is what makes this shape distinct"
 
 
 def test_every_format_is_a_real_leak(formats):
@@ -103,20 +114,29 @@ def test_the_structured_control_is_caught(formats):
     assert _rate(formats, "1_structured") == 1.0
 
 
-def test_the_format_changes_the_answer(formats):
-    """THE FINDING. Same threat, same egress message, different source shape — and the
-    detector's answer moves. That is a fact about the parser, and it means the headline
-    detection rate is conditioned on a corpus written the way the parser likes.
+def test_every_format_is_now_caught(formats):
+    """THE RESULT, and it is the reverse of what this family first measured.
 
-    Which formats survive is measured rather than asserted here; the per-format numbers
-    are in the runner's BY RECORD FORMAT table and belong in §6 next to the headline,
-    not in a footnote.
+    On 2026-08-26 the four formats scored 100 / 100 / 0 / 0. A structured block and a JSON
+    payload were caught; a clinician's narrative and a chat transcript were not, because
+    `InformationFlowAgent._structured_tags` only reads `Key: value` lines and with Presidio
+    off that is the only source of taint tags. The corpus had been authored in the one
+    shape the parser understood, so the headline rate was conditioned on it.
+
+    The parser was widened rather than the finding documented: a prose extractor for
+    identifier-shaped tokens, credential-shaped runs and capitalised name runs, unioned
+    with the structured one; and content binding now reads a subject NAMED in text as well
+    as bracketed. All four formats are caught, and the corpus rotates through all four in
+    every family (task N2) rather than testing one shape and hoping.
+
+    This test is now the regression guard for that fix. If a format drops back to zero,
+    the extractor lost a pattern and the headline rate has quietly become a property of
+    record shape again.
     """
     rates = {fmt: _rate(formats, fmt) for fmt in RECORD_FORMATS}
-    assert len(set(rates.values())) > 1, (
-        f"all formats scored identically ({rates}) — either the fallback parser is more "
-        "general than we thought, which is worth saying, or the formats are not actually "
-        "different enough to test anything")
+    assert set(rates.values()) == {1.0}, (
+        f"a record format is no longer parsed: {rates} — the prose extractor has lost a "
+        "pattern, and the reported detection rate is conditioned on record shape again")
 
 
 def test_the_baselines_are_indifferent_to_format(formats):

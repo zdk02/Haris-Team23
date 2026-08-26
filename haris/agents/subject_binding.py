@@ -16,10 +16,12 @@ THREE BINDINGS.
      in its lineage. A later message DECLARING a different data_subject is cross-subject
      contamination (threat-model TC4) and is BLOCKED.
 
-  2. CONTENT BINDING (added 2026-08-24). A record usually asserts its own subject — the
-     bracketed marker a structured record carries in its header. When that assertion
-     disagrees with the message's declared `data_subject`, the message is BLOCKED,
-     regardless of where it is addressed.
+  2. CONTENT BINDING (added 2026-08-24). A record usually asserts its own subject — as a
+     bracketed marker in a structured header, or simply named in the text of a narrative
+     note, a JSON payload or a chat transcript. When that assertion disagrees with the
+     message's declared `data_subject`, the message is BLOCKED, regardless of where it is
+     addressed. Reading only the bracketed form made this a property of one record
+     format; both are read since task N1.
 
   3. DECLARED SCOPE (added 2026-08-24, after measuring what binding 1 costs). When the
      calling application states up front which subjects a session legitimately covers,
@@ -164,12 +166,23 @@ class SubjectBindingAgent(SecurityAgent):
     def _contradicting_subjects(self, content: str, declared: str) -> list[str]:
         """Subjects the CONTENT claims, which are not the subject the message declares.
 
-        Only markers matching a configured known subject count. An unconfigured agent
-        returns nothing here, so this check cannot fire by accident.
+        Two ways a record can assert whose it is. A bracketed marker — the convention a
+        structured record uses — or the subject simply NAMED in the text, which is what a
+        narrative note, a JSON payload or a chat transcript does. Reading only the first
+        made content binding a property of one record format: measured in the
+        `record_format` family, a subject-forgery attack delivered as prose asserted
+        nothing this agent could see (task N1).
+
+        Only strings matching a configured known subject count, in either form, so an
+        unconfigured agent returns nothing and ordinary prose cannot be mistaken for a
+        subject claim. That is what keeps the bare-text check from firing on a word that
+        merely resembles a label.
         """
         if not self.known_subjects:
             return []
         asserted = {m.strip() for m in self._marker.findall(content or "")}
+        text = content or ""
+        asserted |= {s for s in self.known_subjects if s in text}
         return sorted((asserted & self.known_subjects) - {declared})
 
     def _declared_scope(self, message: Message,

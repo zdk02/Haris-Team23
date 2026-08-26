@@ -119,8 +119,15 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
         declared = m.metadata.get("data_subject")
         if not declared:
             continue
-        asserted = {a.strip() for a in _SUBJECT_MARKER.findall(m.content)} & known
-        if asserted - {str(declared)}:
+        # A record asserts its subject either as a bracketed marker — the structured
+        # convention — or simply by naming it, which is what a JSON payload, a narrative
+        # note and a chat transcript do. Reading only the bracket made this check a
+        # property of ONE record format: once the corpus rotated formats (task N2), 18 of
+        # 24 subject-forgery scenarios asserted nothing the oracle could see and were
+        # labelled benign. The agent had the same blind spot and was fixed with it.
+        asserted = {a.strip() for a in _SUBJECT_MARKER.findall(m.content)}
+        asserted |= {s for s in known if s in m.content}
+        if (asserted & known) - {str(declared)}:
             return True, "traffic:subject-forgery"
 
     # 4. scope violation (task K6): the recipient is a partner we really do have an

@@ -76,6 +76,20 @@ _IDENTIFYING_KEYS = frozenset({
 
 _WORD = re.compile(r"[a-z0-9]+")
 
+# An identifier-shaped token: a short uppercase label, optionally a second label part,
+# then digits. Matches MRN-4821, ACCT-1234, STU-ID-0496, EMP-ID-0496.
+_IDENTIFIER_SHAPE = re.compile(r"\b[A-Z]{2,8}(?:-[A-Z]{1,4})?-?\d{3,8}\b")
+
+# A credential: a long unbroken run of uppercase letters and digits. Ordinary prose does
+# not produce these, and a key pasted into a narrative note or a chat line is exactly how
+# one escapes in practice.
+_CREDENTIAL_SHAPE = re.compile(r"\b[A-Z0-9]{16,}\b")
+
+# A run of two or more capitalised words — a personal name in prose. The run is emitted
+# whole AND without its first word, because a sentence-initial verb ("Saw Robert Roberts")
+# capitalises into the run and would otherwise swallow the name.
+_NAME_RUN = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b")
+
 
 def _tokens(s: str) -> list[str]:
     """Lowercased alphanumeric words. Collapses runs of whitespace and punctuation, so
@@ -354,6 +368,10 @@ class InformationFlowAgent(SecurityAgent):
         # of tags when the detector is unavailable.
         if self.use_structured_fallback or detector_tags is None:
             tags |= self._structured_tags(record_text)
+            # ...and the prose extractor, so a record that arrives as a narrative note or
+            # a chat transcript taints the session too. Before task N1 those formats
+            # produced no tags at all and the leak went undetected (see _prose_tags).
+            tags |= self._prose_tags(record_text)
 
         return {t for t in tags
                 if len(t) >= self.min_tag_len and t.lower() not in self.stopwords}
@@ -391,6 +409,41 @@ class InformationFlowAgent(SecurityAgent):
                 self._detector = None
                 return None
         return self._detector
+
+    def _prose_tags(self, record_text: str) -> set[str]:
+        """Identifiers from FREE TEXT — a narrative note, a chat transcript, an email.
+
+        WHY THIS EXISTS (task N1, 2026-08-26). The structured extractor below only reads
+        `Key: value` lines, and every record in the evaluation corpus was written that
+        way. Measured with the `record_format` family — same leak, same egress message,
+        four source shapes — a structured record and a JSON payload were caught 100% of
+        the time and a clinician's narrative or a chat transcript 0%. The corpus had been
+        authored in the one format the parser expects, and with Presidio off that parser
+        is the only source of taint tags, so the headline rate was conditioned on it.
+
+        That is a real weakness rather than a corpus artefact: records arrive from an EHR
+        API as JSON, from a clinician as prose, from a handover channel as chat, and a
+        system that only reads one of those shapes protects one of them.
+
+        Three patterns, all deliberately narrow. An identifier-shaped token (a short
+        uppercase label followed by digits), a long uppercase-alphanumeric run (a key or
+        token — prose does not produce these, and a credential pasted into a chat line is
+        exactly how one escapes), and a run of capitalised words (a personal name). None
+        of this is a general NER — that is Presidio's job when it is available — and each
+        is chosen to have a low false-positive rate on ordinary prose, because an
+        over-eager extractor taints a session on its own coordination notes.
+        """
+        tags: set[str] = set()
+        tags |= set(_IDENTIFIER_SHAPE.findall(record_text))
+        tags |= set(_CREDENTIAL_SHAPE.findall(record_text))
+        for run in _NAME_RUN.findall(record_text):
+            tags.add(run)
+            words = run.split()
+            if len(words) > 2:
+                # "Saw Robert Roberts" -> also "Robert Roberts": a sentence-initial word
+                # capitalises into the run and would otherwise hide the name inside it.
+                tags.add(" ".join(words[1:]))
+        return tags
 
     def _structured_tags(self, record_text: str) -> set[str]:
         """Spike-grade structured extractor: bracketed subject id + 'Key: value' lines.
