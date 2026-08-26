@@ -20,7 +20,7 @@ import pytest
 
 from haris.agents.base import SecurityAgent
 from haris.notify import Notifier, Channel, NotificationEvent, Category, Severity
-from haris.notify.channels import BufferChannel, WebhookChannel
+from haris.notify.channels import BufferChannel, SESChannel, WebhookChannel
 from haris.notify.health import (HealthCheck, HarisUnhealthy, audit_chain_probe)
 from haris.orchestrator.orchestrator import Orchestrator
 from haris.audit import AuditLog
@@ -324,3 +324,88 @@ def test_the_ci_notifier_routes_through_the_dispatcher(monkeypatch):
     assert event.source == "ci"
     assert "FAILED" in event.summary and "abc12345" in event.summary
     assert not event.metadata, "channels must receive the sanitized copy"
+
+
+
+# --- R6: the SES channel — the Channel abstraction earning its keep --------------------
+def test_ses_channel_is_a_noop_when_unconfigured(monkeypatch):
+    """Same contract as the webhook: no configuration means silence, never a crash. A
+    grader's machine, CI and every local run have no SES identities."""
+    for var in ("HARIS_SES_SENDER", "HARIS_SES_RECIPIENTS"):
+        monkeypatch.delenv(var, raising=False)
+    ch = SESChannel()
+    assert ch.enabled is False
+    ch.send(NotificationEvent.operational("health", "audit_chain_probe FAILED"))
+
+
+def test_ses_channel_builds_the_expected_send_email_call():
+    calls = []
+
+    class FakeSes:
+        def send_email(self, **kw):
+            calls.append(kw)
+
+    ch = SESChannel(sender="alerts@haris-monitor.com", recipients=["ops@example.com"],
+                    region="us-east-1", client=FakeSes())
+    ch.send(NotificationEvent.operational("health", "audit_chain_probe FAILED",
+                                          severity=Severity.CRITICAL))
+    assert calls[0]["Source"] == "alerts@haris-monitor.com"
+    assert calls[0]["Destination"]["ToAddresses"] == ["ops@example.com"]
+    assert "CRITICAL" in calls[0]["Message"]["Subject"]["Data"]
+    assert "audit_chain_probe FAILED" in calls[0]["Message"]["Body"]["Text"]["Data"]
+
+
+def test_ses_recipients_parse_from_a_comma_separated_env_var(monkeypatch):
+    monkeypatch.setenv("HARIS_SES_SENDER", "a@b.com")
+    monkeypatch.setenv("HARIS_SES_RECIPIENTS", " c@d.com , e@f.com ")
+    ch = SESChannel()
+    assert ch.enabled is True
+    assert ch.recipients == ["c@d.com", "e@f.com"]
+
+
+def test_ses_channel_transmits_no_message_content():
+    """An email is forwarded far more easily than a chat message, so the secret-safe rule
+    matters more here, not less: only one_line(), and the reference is truncated."""
+    calls = []
+
+    class FakeSes:
+        def send_email(self, **kw):
+            calls.append(kw)
+
+    ch = SESChannel(sender="a@b.com", recipients=["c@d.com"], client=FakeSes(),
+                    min_severity=Severity.WARNING)
+    ch.send(NotificationEvent.security("orchestrator",
+                                       "a PHI flow to an external recipient was blocked",
+                                       reference="f" * 64, session_id="s-tc3"))
+    body = calls[0]["Message"]["Body"]["Text"]["Data"]
+    assert "f" * 64 not in body          # only the truncated reference travels
+    assert "s-tc3" in body
+
+
+def test_one_notify_reaches_two_mechanisms_unchanged_dispatcher(monkeypatch):
+    """The report claim, as a test: adding a delivery mechanism is a new Channel and nothing
+    else. One notify(), a webhook and an email, no change to notifier.py."""
+    monkeypatch.setenv("HARIS_ALERT_WEBHOOK", "https://hooks.slack.com/services/x")
+    posted = []
+    monkeypatch.setattr("haris.notify.channels.urllib.request.urlopen",
+                        lambda req, timeout=None: posted.append(req) or _FakeResp())
+
+    mails = []
+
+    class FakeSes:
+        def send_email(self, **kw):
+            mails.append(kw)
+
+    n = Notifier(channels=[WebhookChannel(min_severity=Severity.CRITICAL),
+                           SESChannel(sender="a@b.com", recipients=["c@d.com"],
+                                      client=FakeSes())])
+    n.notify(NotificationEvent.operational("health", "Haris failed closed",
+                                           severity=Severity.CRITICAL))
+    assert len(posted) == 1 and len(mails) == 1
+    assert n.counts["delivered"] == 2
+
+
+class _FakeResp:
+    status = 200
+    def __enter__(self): return self
+    def __exit__(self, *a): return False

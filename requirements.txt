@@ -24,3 +24,7 @@ streamlit-agraph==0.0.45
 pandas==3.0.5
 pytest==9.1.1
 faker==40.36.0
+
+# boto3 is deliberately NOT pinned here. SESChannel imports it lazily and no-ops without it,
+# and the deployed task role grants no SES permission, so the image must not carry it.
+# To exercise the SES channel locally:  pip install boto3

@@ -1,8 +1,9 @@
 """External notification channels — where an alert is actually delivered.
 
-Right now this holds the webhook channel (the out-of-band push). The dashboard banner is a
-different kind of channel that lives with the dashboard (`demo_app/dashboard.py`, task 6),
-because it renders in a UI rather than POSTing anywhere.
+Right now this holds the webhook channel (the out-of-band push), the SES email channel, and
+the in-memory buffer the dashboard banner reads. The banner itself renders in a UI rather
+than POSTing anywhere, which is why it is a buffer the dashboard drains
+(`demo_app/dashboard.py`) rather than a channel that delivers.
 
 WebhookChannel posts an alert to a Slack or Discord *incoming webhook*. Two deliberate design
 choices for a student team:
@@ -41,6 +42,12 @@ _DISCORD_COLOR = {Severity.CRITICAL: 0xE01E5A, Severity.WARNING: 0xECB22E, Sever
 _SLACK_COLOR = {Severity.CRITICAL: "#E01E5A", Severity.WARNING: "#ECB22E", Severity.INFO: "#2EB67D"}
 
 _DEFAULT_ENV_VAR = "HARIS_ALERT_WEBHOOK"
+
+_SES_SENDER_ENV = "HARIS_SES_SENDER"
+_SES_RECIPIENTS_ENV = "HARIS_SES_RECIPIENTS"   # comma-separated
+_SES_REGION_ENV = "HARIS_SES_REGION"
+
+_ses_log = get_logger("notify.ses")
 
 
 class WebhookChannel(Channel):
@@ -120,6 +127,70 @@ class WebhookChannel(Channel):
         # Unknown target: a plain body most webhook receivers accept.
         return {"text": f"Haris alert — {text}"}
 
+class SESChannel(Channel):
+    """Emails an alert via Amazon SES. Deliberately the SAME SHAPE as WebhookChannel:
+    env-var configuration, a silent no-op when unset, CRITICAL-only by default.
+
+    That symmetry is the point. The `Channel` abstraction claims a new delivery mechanism is
+    a new class and nothing else — this is the class that tests the claim, and not one line
+    of `notifier.py` changed to accept it.
+
+    boto3 is imported LAZILY inside `send()`, so SES costs nothing to anyone who does not use
+    it: it is not in `requirements.lock.txt` and not in the container image. That is a
+    decision, not an oversight. The deployed ECS task role carries NO policies at all
+    (`haris-infra.yaml`), so the container holds credentials that cannot call SES — and it
+    should not. Alerting for "Haris is not running" is out-of-process (a CloudWatch alarm on
+    HealthyHostCount -> SNS -> email), because an in-process alerter cannot report its own
+    absence: the code that would send the message is the code that stopped.
+
+    SES SANDBOX. Until production access is granted, BOTH the sender and every recipient must
+    be a verified SES identity. For a demo whose recipients are verified team addresses that
+    is sufficient, and it is why production access is not on the critical path.
+    """
+    name = "ses"
+
+    def __init__(self, sender: Optional[str] = None, recipients=None, *,
+                 region: Optional[str] = None,
+                 min_severity: Severity = Severity.CRITICAL,
+                 client=None) -> None:
+        self.sender = sender or os.environ.get(_SES_SENDER_ENV)
+        raw = recipients if recipients is not None else os.environ.get(_SES_RECIPIENTS_ENV, "")
+        if isinstance(raw, str):
+            raw = [a.strip() for a in raw.split(",") if a.strip()]
+        self.recipients = list(raw)
+        self.region = (region or os.environ.get(_SES_REGION_ENV)
+                       or os.environ.get("AWS_REGION"))
+        self.min_severity = min_severity
+        self._client = client      # injectable, so tests need neither boto3 nor network
+        if not self.enabled:
+            _ses_log.info("notify.ses: %s / %s not set — SES channel disabled (no-op)",
+                          _SES_SENDER_ENV, _SES_RECIPIENTS_ENV)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.sender and self.recipients)
+
+    def _get_client(self):
+        if self._client is None:
+            import boto3          # lazy: never a hard dependency of the package or the image
+            self._client = boto3.client("ses", region_name=self.region)
+        return self._client
+
+    def send(self, event: NotificationEvent) -> None:
+        if not self.enabled:
+            return  # unconfigured — nothing to do, and that is fine
+        # Only ever one_line(): severity, category, source, summary, session and the
+        # truncated reference. The event was already sanitized by the Notifier; this
+        # transmits no message content, exactly as the webhook does. It matters more here —
+        # an email is forwarded far more easily than a chat message.
+        self._get_client().send_email(
+            Source=self.sender,
+            Destination={"ToAddresses": self.recipients},
+            Message={
+                "Subject": {"Data": f"Haris · {event.severity.value.upper()} · {event.source}"},
+                "Body": {"Text": {"Data": event.one_line()}},
+            },
+        )
 
 class BufferChannel(Channel):
     """An in-memory ring buffer of the most recent alerts, for a UI to read and render.
