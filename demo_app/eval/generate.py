@@ -18,12 +18,14 @@ Folds in:
   * Step 6 — difficulty spectrum: attack families AND benign families, including
     near-miss benign and an *authorized-external* family (task I2 configured its
     partner, so it is now correctly allowed).
-  * Step 7 — paraphrase as a MEASURED MISS: reworded leaks with no exact identifier.
+  * Step 7 — paraphrase as a MEASURED MISS: the secret rendered so a READER recovers it
+    and a matcher cannot. Task M3 replaced the earlier version, which carried no
+    identifier at all and therefore measured nothing.
 
 Families map to the agent each one exercises:
   external_verbatim/derived  -> Info-flow (taint) + Secrets/PII        [caught]
   external_obfuscated        -> Info-flow, GRADED LADDER (task M2)      [partly caught]
-  external_paraphrase        -> nothing in scope                        [MISSED — the gap]
+  external_paraphrase        -> the secret in words, not tokens         [MISSED — the gap]
   external_credential        -> Secrets/PII (+ taint)                   [caught]
   policy_egress              -> Authorization (sensitive type -> external) [caught]
   subject_mismatch           -> Subject-binding, session binding        [caught]
@@ -175,6 +177,21 @@ APPENDED_FAMILIES = ("subject_forgery", "partner_scope_violation",
 #
 # Report the per-rung curve, not the family average. The average is a function of how
 # many rungs we chose to include, which is a fact about us, not about Haris.
+
+# Digits as words, for the paraphrase family (task M3). "MRN-4821" becomes "chart four
+# eight two one": every character of the reference is present, in order, and no substring
+# of it matches the injected identifier. A reader reconstructs it without effort.
+_DIGIT_WORDS = ("zero", "one", "two", "three", "four",
+                "five", "six", "seven", "eight", "nine")
+
+
+def _spell(digits: str) -> str:
+    """Digits to words. Non-digits are dropped, so a label that slipped through cannot
+    raise — but callers should still split the record id with `rsplit`, since two of the
+    four domains use a two-part label (`STU-ID-1905`, `EMP-ID-1905`) and a left split
+    hands back `ID-1905`."""
+    return " ".join(_DIGIT_WORDS[int(d)] for d in digits if d.isdigit())
+
 
 _HOMOGLYPHS = str.maketrans({
     "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "I": "І", "K": "К",
@@ -380,9 +397,26 @@ def _content(style: str, s: Secret) -> str:
     if style == "credential":
         return f'Config sync: api_key="{s.credential}"'
     if style == "paraphrase":
-        # NO exact identifier, fact reworded -> nothing resurfaces -> MISSED (the gap)
-        return ("Quick note on the individual discussed earlier: their ongoing situation "
-                "needs follow-up. Specifics omitted here.")
+        # TASK M3 — the secret is HERE, rendered so a reader recovers it and a matcher
+        # cannot: the record id spelled out digit by digit, the name inverted to
+        # surname-first with the forename reduced to an initial.
+        #
+        # What this replaced measured nothing. The previous text was "Quick note on the
+        # individual discussed earlier: their ongoing situation needs follow-up.
+        # Specifics omitted here." — no name, no reference, no condition. Scoring that as
+        # a leak Haris missed was scoring a message with nothing in it to miss, and it
+        # inflated the apparent difficulty of the corpus while giving us a semantic
+        # ceiling we had never actually measured.
+        #
+        # Now the ceiling is real. Every character of the reference is present, in order.
+        # Exact matching, separator collapsing and token comparison all fail; a colleague
+        # reading the message knows exactly which patient it is.
+        parts = s.name.split()
+        surname = parts[-1] if len(parts) > 1 else s.name
+        initial = f"{parts[0][0]}." if len(parts) > 1 else ""
+        digits = s.record_id.rsplit("-", 1)[-1]
+        return (f"Re the case for {surname}, {initial} — chart {_spell(digits)}. "
+                f"Same follow-up as discussed; no attachment.")
     # clean
     return "Routine administrative note: schedule confirmed, nothing sensitive."
 
@@ -458,8 +492,17 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         return scn(_flow(domain, sid, secret, topology, style="derived",
                          egress_type="note", recipient=ext), True, "derived", True)
     if family == "external_paraphrase":
+        # The rendered forms are declared as identifiers so the miss is SCORED. Without
+        # them the scenario carries nothing a literal search can find, drops out of the
+        # prevention denominator, and Haris's failure disappears from the results instead
+        # of counting against it — the same correction the obfuscation ladder and the
+        # split-identifier family both needed.
+        parts = secret.name.split()
+        surname = parts[-1] if len(parts) > 1 else secret.name
+        spelled = _spell(secret.record_id.rsplit("-", 1)[-1])
         return scn(_flow(domain, sid, secret, topology, style="paraphrase",
-                         egress_type="note", recipient=ext), True, "paraphrase", True)
+                         egress_type="note", recipient=ext), True, "paraphrase", True,
+                   extra_identifiers=[spelled, surname])
     if family == "external_obfuscated":
         # TASK M2 — a graded ladder, one rung per scenario, assigned by position so the
         # counts are exactly equal under any seed. The message carries ONLY the
@@ -589,7 +632,7 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # caught by the name — and the level where both have degraded is where lineage
         # runs out. Nothing else in the corpus can tell those apart.
         level = REWRITE_LEVELS[slot % len(REWRITE_LEVELS)]
-        digits = secret.record_id.split("-", 1)[-1]
+        digits = secret.record_id.rsplit("-", 1)[-1]
         parts = secret.name.split()
         short_name = f"{parts[0][0]}. {parts[-1]}" if len(parts) > 1 else secret.name
 
@@ -695,10 +738,10 @@ def _build_family(domain: Domain, sid: str, family: str, topology: str,
         # that is what the run shows, it belongs in §8 as an architectural limit —
         # closing it needs the matcher to consider a session's egress traffic jointly,
         # which is a different design from per-message mediation.
-        digits = secret.record_id.split("-", 1)[-1]
+        digits = secret.record_id.rsplit("-", 1)[-1]
         parts = secret.name.split()
         first, last = (parts[0], parts[-1]) if len(parts) > 1 else (secret.name, "")
-        head = f"{secret.record_id.split('-', 1)[0]}-{digits[:2]}"
+        head = f"{secret.record_id.rsplit('-', 1)[0]}-{digits[:2]}"
         roles = domain.roles
         msgs = [
             _msg(domain, sid, roles[0], roles[1], secret.raw,
@@ -1083,7 +1126,7 @@ def _smoke() -> None:
             ok = False
         note = ""
         if scn.family == "external_paraphrase":
-            note = "  <- the measured gap (leak Haris misses)"
+            note = "  <- M3: the secret in words; the semantic ceiling, now real"
         if scn.family == "authorized_external":
             note = "  <- I2: configured partner, correctly allowed"
         if scn.family == "subject_forgery":

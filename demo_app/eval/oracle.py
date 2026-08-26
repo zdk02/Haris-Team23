@@ -150,9 +150,19 @@ def label_consistency_check(scn: Scenario) -> tuple[bool, str]:
             if any(ni in ncontent for ni in norm_ids):
                 return True, "traffic:identifier-egress-normalized"
 
-    # 6. semantic paraphrase: no exact token survives -> ground truth by construction
-    if scn.leak_style == "paraphrase" and scn.leak_occurred:
-        return True, "construction:paraphrase"
+    # NOTE: there used to be a sixth check here — `construction:paraphrase` — labelling
+    # the paraphrase family from how it was built rather than from its traffic. It was
+    # necessary while those messages carried no identifier at all, and task M3 removed the
+    # need for it: the paraphrase now renders the record id digit by digit and the name
+    # surname-first, and BOTH are declared as identifiers, so check 5 labels the family
+    # from what is actually in the message.
+    #
+    # Deleting it matters beyond tidiness. While it existed, stripping every identifier
+    # out of a paraphrase scenario still produced the label "attack", which meant the
+    # check could not be falsified for that family — the mutation tests in
+    # tests/test_label_check_mutation.py caught exactly that. Every family except
+    # `forged_session_scope` is now labelled from traffic, and that one cannot be:
+    # its traffic is byte-for-byte identical to a legitimate ward round.
 
     return False, "traffic:none"
 

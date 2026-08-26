@@ -93,20 +93,26 @@ def test_build_agents_configures_every_domain():
 # realises the intended label, which is what the next test covers.
 
 
-def test_only_the_two_indistinguishable_families_rest_on_construction():
+def test_only_one_family_rests_on_construction():
     """Most labels are re-derivable from the traffic. Exactly two are not, and in both
     cases that IS the finding rather than a shortcut.
 
-    `external_paraphrase` carries no exact identifier, so there is nothing in the message
-    to match against ground truth. `forged_session_scope` is byte-for-byte identical to a
-    legitimate ward round — the attacker wrote a declaration that looks exactly like a
-    true one — so no reading of the traffic can separate them, which is precisely the
-    limitation the family exists to measure.
+    `forged_session_scope` is byte-for-byte identical to a legitimate ward round — the
+    attacker wrote a declaration that looks exactly like a true one — so no reading of the
+    traffic can separate them, which is precisely the limitation the family exists to
+    measure.
 
-    Asserted as a SET rather than a percentage: the old form was a 0.9 threshold that
-    quietly assumed paraphrase was the only such family, and it would have absorbed a
-    third one without anyone noticing. If a family ever joins this set, the question to
-    ask is whether it was constructed to be unfalsifiable.
+    `external_paraphrase` used to be here too, because its messages carried no identifier
+    for any check to find. Task M3 fixed that: the record id is now spelled out digit by
+    digit and the name inverted, both declared as identifiers, so the family is labelled
+    from its traffic like everything else. One family resting on construction is the floor
+    — it cannot go lower without inventing a distinction the traffic does not contain.
+
+    Asserted as a SET rather than a percentage: a threshold would absorb a new
+    construction-labelled family without anyone noticing. If one ever joins this set, the
+    question to ask is whether it was constructed to be unfalsifiable — a family whose
+    label survives stripping every identifier out of it is not being measured, it is
+    being asserted.
     """
     methods: dict[str, set] = {}
     for s in generate():
@@ -114,8 +120,7 @@ def test_only_the_two_indistinguishable_families_rest_on_construction():
 
     by_construction = {fam for fam, ms in methods.items()
                        if any(m.startswith("construction") for m in ms)}
-    assert by_construction == {"external_paraphrase", "forged_session_scope"}, \
-        by_construction
+    assert by_construction == {"forged_session_scope"}, by_construction
 
     flat = [label_consistency_check(s)[1] for s in generate()]
     assert sum(1 for m in flat if m.startswith("traffic")) / len(flat) >= 0.85
@@ -177,22 +182,28 @@ def test_designed_catches_are_full(results):
         assert _family(results, fam, "stopped") == 1.0, fam
 
 
-def test_paraphrase_family_carries_no_identifier_yet(results):
-    """NOT a detector weakness — a defect in the corpus, pinned until task M3 fixes it.
+def test_the_paraphrase_ceiling_is_real(results):
+    """Task M3 — this family used to measure nothing and now measures the design's limit.
 
-    This family was presented as the honest semantic ceiling: reworded content Haris cannot
-    catch. Measured 2026-08-24: those 24 messages carry NO injected identifier at all
-    (`leak_unmediated` is 0/24), so there is nothing in them to detect and a correct
-    detector SHOULD pass them. Scoring them as missed leaks made the corpus look harder
-    than it is and gave us a ceiling we had not actually measured.
+    It previously read "Quick note on the individual discussed earlier: their ongoing
+    situation needs follow-up. Specifics omitted here." No name, no reference, no
+    condition. `leak_unmediated` was 0/24, so scoring it as a leak Haris missed was
+    scoring a message with nothing in it to miss — an inflated difficulty and a ceiling
+    we had never actually measured.
 
-    M3 replaces them with paraphrases that genuinely retain the secret ("the 48-year-old
-    with the elevated A1c, chart four-eight-two-one"). When that lands this test should
-    start failing — that is the signal the family became a real test.
+    Now the secret is present and recoverable by a reader: the record id spelled out digit
+    by digit, the name inverted to surname-first with an initial. Every character of the
+    reference is there, in order, and nothing a literal or normalised search can find. The
+    rendered forms are declared as identifiers so the miss stays in the denominator.
+
+    Haris misses all of them, and so does the content scanner — which locates the limit
+    correctly. It is not our matcher being weaker than a DLP regex; every literal-matching
+    approach fails on a rewording that preserves meaning and discards every token. That is
+    the motivation for a semantic agent, and it is section 8, not a threshold.
     """
+    assert _family(results, "external_paraphrase", "leak_unmediated") == 1.0
     assert _family(results, "external_paraphrase", "stopped") == 0.0
     assert _family(results, "external_paraphrase", "detected") == 0.0
-    assert _family(results, "external_paraphrase", "leak_unmediated") == 0.0
 
 
 def test_the_obfuscation_ladder_is_a_real_gradient(results):

@@ -119,7 +119,12 @@ def test_the_halves_reassemble(split):
     nothing."""
     for scn in split:
         joined = " ".join(m.content for m in scn.messages[1:])
-        digits = scn.secret.record_id.split("-", 1)[-1]
+        # rsplit, not split: two of the four domains use a TWO-PART label
+        # (STU-ID-0496, EMP-ID-0496), so a left split returns "ID-0496" rather than the
+        # digits. The generator had the same bug until 2026-08-26 — it declared "STU-ID"
+        # as a leaked fragment, which is the domain's label and identifies nobody, so half
+        # the corpus was measuring the wrong thing while the family still appeared to work.
+        digits = scn.secret.record_id.rsplit("-", 1)[-1]
         assert digits[:2] in joined and digits[2:] in joined, scn.id
         for part in scn.secret.name.split():
             assert part in joined, (scn.id, part)
