@@ -15,9 +15,26 @@ This establishes the property (identity is verified, not self-declared). Hardene
 HMAC-signing the whole message so the token also proves integrity, plus a nonce/timestamp to
 defeat replay — are the roadmap.
 
-Stateless: the token registry is passed at construction; agents never see each other's
-tokens. ``default_allow_unregistered`` controls what happens to a sender with no registry
-entry (default False = strict: an unknown sender has no verifiable identity, so it's blocked).
+The registry is passed at construction, so no agent holds another agent's registry entry.
+
+BUT AGENTS DO SEE EACH OTHER'S TOKENS IN TRANSIT. An earlier version of this docstring said
+they never do, and that was false. `record_flow` stores the whole `Message` including its
+metadata, and `get_context` hands the full session history to every agent on every hop — so
+a downstream agent can read the reader's token straight out of the history it is given.
+Verified by harvesting one, not theorised.
+
+Stripping the token from the stored Message is the fix and it is small; it is deferred
+rather than done because the accompanying half is not small. There is no nonce, timestamp or
+sequence number anywhere in `Message` or in this agent, so a captured message replays
+forever, and closing that needs the token bound by HMAC to session, sender, receiver, nonce
+and a content hash, with the orchestrator rejecting nonce reuse — a protocol change across
+the schema and every agent that builds a message. Report §8 records both halves under
+"identity is a bearer token: no message integrity, no anti-replay". A docstring that
+overstated the property was the more urgent problem, because it is the one a reader would
+have believed.
+
+``default_allow_unregistered`` controls what happens to a sender with no registry entry
+(default False = strict: an unknown sender has no verifiable identity, so it's blocked).
 """
 from __future__ import annotations
 
