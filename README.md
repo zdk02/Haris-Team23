@@ -56,7 +56,7 @@ point all three were wrong. What is in the repo today:
     source .venv/bin/activate                  # Windows: .venv\Scripts\activate
     pip install -r requirements.txt
     python -m spacy download en_core_web_sm    # REQUIRED for the secrets/PII agent
-    pytest                                     # 194 tests
+    pytest                                     # the full suite
 
 `en_core_web_sm` is not a pip dependency and has to be downloaded separately. Without it the
 Presidio path is unavailable; every entry point detects that and runs the other four agents,
@@ -102,7 +102,7 @@ Generate these locally; never commit one.
       hospital/       # the vulnerable demo app, the secured pipeline, the demos
       eval/           # scenario generator, arms, metrics, golden-file guard
       dashboard*.py   # the Streamlit operator view
-    tests/            # 194 tests
+    tests/            # the full suite
 
 ## Documents
 

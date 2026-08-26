@@ -21,4 +21,3 @@ htmlcov/
 # moment the corpus changes, and a stale results file is worse than none: a reader takes its
 # numbers as current. The reproducible artefacts are golden_rates.json and report/evidence/.
 eval_results.json
-presidio_on.json

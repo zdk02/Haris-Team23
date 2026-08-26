@@ -69,6 +69,14 @@ def report(seeds: Sequence[int], include_secrets: bool) -> None:
     print("  sensitivity to the STRINGS, and nothing wider. It is not evidence that the")
     print("  corpus generalises to real traffic.\n")
 
+    if len(seeds) < 2:
+        # A spread computed from one sample is trivially zero, and the verdict below
+        # would read "invariant" — a claim of stability from a measurement that cannot
+        # detect instability. Say so instead of implying it (issue #23).
+        print("  (!) ONE SEED. The spread below is zero by construction, not by evidence:")
+        print("      a single sample cannot show that a rate is stable. Pass at least two")
+        print("      seeds before reading the verdict, e.g. --seeds 23 24 25.\n")
+
     rows = [(s, measure(s, include_secrets)) for s in seeds]
 
     print(f"  {'seed':>6}{'prevention':>14}{'detection':>14}{'false pos':>14}")
@@ -80,17 +88,23 @@ def report(seeds: Sequence[int], include_secrets: bool) -> None:
     for metric in ("prevention", "detection", "false_positive"):
         vals = [m[metric] for _, m in rows]
         spread = max(vals) - min(vals)
-        verdict = ("invariant" if spread == 0 else
-                   "stable" if spread <= 0.02 else
-                   "SENSITIVE — report the range, not a point")
+        if len(seeds) < 2:
+            verdict = "UNKNOWN — one seed cannot establish stability"
+        else:
+            verdict = ("invariant" if spread == 0 else
+                       "stable" if spread <= 0.02 else
+                       "SENSITIVE — report the range, not a point")
         mean = statistics.mean(vals)
         print(f"  {metric:<16} mean={mean*100:5.1f}%  "
               f"range={min(vals)*100:5.1f}–{max(vals)*100:5.1f}%  "
               f"spread={spread*100:4.1f} pts   {verdict}")
 
     print()
-    if all(max(m[k] for _, m in rows) == min(m[k] for _, m in rows)
-           for k in ("prevention", "detection", "false_positive")):
+    if len(seeds) < 2:
+        print("  Run again with several seeds. With one, every 'spread' above is the")
+        print("  difference between a number and itself.")
+    elif all(max(m[k] for _, m in rows) == min(m[k] for _, m in rows)
+             for k in ("prevention", "detection", "false_positive")):
         print("  Every rate is identical across seeds. That is the expected result for the")
         print("  structural agents — recipient, token, subject binding and exact-identifier")
         print("  taint do not care what a patient is called — and it means the reported")
