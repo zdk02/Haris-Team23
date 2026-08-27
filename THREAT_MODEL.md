@@ -194,6 +194,13 @@ doesn't cripple normal work.
 
 ## 6. Measured results
 
+**These five cases are the curated hospital demo, not the evaluation.** They show that each
+mechanism fires on the reference application. The measured result of this project is report
+§6 — 576 generated scenarios across 24 threat families, run against reference baselines —
+where the same system prevents 73% of exfiltration, catches 100% of boundary crossings, and
+carries a 12% false-positive rate. Quote those numbers, not these. A 5/5 and a 0/4 over nine
+hand-written cases is a demonstration, and §6.1 of the report describes why it was replaced.
+
 Run: `python -m demo_app.hospital.eval_harness` (ENFORCE mode, full agent stack). It stages
 every attack above plus the benign controls, and reports detection rate, false-positive
 rate, and per-hop latency; every decision is written to the tamper-evident audit log.
@@ -204,7 +211,7 @@ Current result:
 |---|---|
 | Detection rate (staged attacks stopped) | **100%** (5/5: TC2, TC3, TC4, CRED, SPOOF) |
 | False-positive rate (benign wrongly stopped) | **0%** (0/4) |
-| Latency added per hop | ~11 ms with Presidio on (`python -m demo_app.hospital.latency_report`); ~0.1 ms structured-only (steady-state; see `latency_report.py`) |
+| Latency added per hop | 12.5 ms with Presidio, 0.034 ms structural-only — mediation cost measured against a no-agents floor (report §6.5) |
 | Audit chain intact after the run | **yes** |
 
 The detection rate is reported over the **built** threats; roadmap threats (E, semantic
