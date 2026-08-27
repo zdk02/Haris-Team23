@@ -46,6 +46,10 @@ so no section is orphaned:
 | §8 Limitations & future work | Zeinab | Must be quantified from §6, so it follows the evaluation |
 | §9 Conclusion + abstract | Zeinab | Written last, after §6 is final |
 
+**From Aug 28, ownership is a starting point rather than a claim.** Whoever runs out of
+assigned sections picks up the next unowned one and says so; the skeleton exists precisely so
+that works. Anything requiring AWS access stays with Batoul regardless.
+
 ---
 
 ## IN — committed for the Aug 31 submission
@@ -66,16 +70,15 @@ so no section is orphaned:
 **Security / correctness fixes** (owner: Zeinab)
 - Audit log never retains the content of a blocked message.
 - HMAC-keyed chain + persisted head hash + chain seeding on restart + a lock.
+  *(In-process. The deployment-side persisted store is CUT — see 2026-08-27 below.)*
 - Normalized taint matching (currently defeated by a double space).
 - Quadratic redaction guarded and capped; latency timer covers all of `process()`.
 - Missing recipient counts as external; a `data_type` label cannot short-circuit info-flow;
   blocked hops are not recorded into lineage.
 - Trusted-metadata boundary documented explicitly in `THREAT_MODEL.md`.
 
-**Deployment** (owner: teammate)
+**Deployment** (owner: Batoul)
 - Docker hardening: non-root user, healthcheck, pinned base digest.
-- Persisted audit log the dashboard reads.
-- Minimal Haris service: `POST /v1/inspect` + `GET /health`.
 - AWS ECS/Fargate, one task, ALB + TLS, two minimally-scoped IAM roles.
 - SES email channel (SMTP fallback if production access does not land).
 
@@ -103,7 +106,9 @@ so no section is orphaned:
 | Full fix for attacker-controlled metadata | Real architectural work. We do the cheap 80% and document the trusted-metadata boundary as a stated assumption. |
 | Dashboard Tier-B polish | Only if Aug 29 is genuinely clear. |
 | Docker image size optimisation | ~1.4 GB is irreducible without multi-stage. Not worth an hour. |
-| Rewiring the dashboard to call the Haris service | The dashboard keeps reading the persisted log. Halves the work, no judge-visible loss. |
+| **Persisted audit log** *(moved from IN, 2026-08-27)* | Seeding the chain at build time requires `HARIS_AUDIT_KEY` to be present at `docker build`, which bakes the key into an image layer and undoes the Secrets Manager wiring the deployment depends on. A Fargate container filesystem is ephemeral regardless, so the volume would not survive a task replacement. The chain badge verifies an in-process replay; durability needs an external append-capable store, and report §4.3 and §8 say so explicitly. |
+| **Minimal Haris service (`POST /v1/inspect`, `GET /health`)** *(moved from IN, 2026-08-27)* | The ALB target group already polls `/_stcore/health`, so a second health endpoint has no caller, and the dashboard reads the log directly rather than calling a service. Report §3.5 is corrected to describe two product shapes — library and dashboard — rather than three. |
+| Rewiring the dashboard to call the Haris service | Moot as of 2026-08-27: the service itself is cut. The dashboard reads the audit log in-process, which is what it already did. |
 
 ---
 
@@ -132,3 +137,5 @@ rather than degraded.
 | Date | Who | What changed | Why |
 |---|---|---|---|
 | 2026-08-23 | Batoul | Timebox met a day early; HTTP fallback withdrawn | TLS landed Sun 23. Plain `ws://` proven to fail silently through an intercepting proxy, so HTTP is not a safe fallback for this application |
+| 2026-08-27 | Zeinab · Batoul | Persisted audit log and the `POST /v1/inspect` + `GET /health` service moved from IN to CUT | The persisted log cannot be seeded at build time without putting `HARIS_AUDIT_KEY` into an image layer, which undoes the Secrets Manager wiring; and a Fargate filesystem is ephemeral, so the volume buys nothing. The service has no caller: the target group polls `/_stcore/health` and the dashboard reads the log directly. Both were promised to the mentor in the Phase 4 deck, so slide 17 is updated to record them as cut and to say why. Report §4.3 and §8 already state the durability consequence; §5 states it too, and §3.5 drops the third product shape |
+| 2026-08-27 | Zeinab · Batoul | Account and resource identifiers are **not** redacted, consistently across the report, the appendices and the screenshots | The account ID is already present in two public commits (379d865, c7cd61d) via `report/appendix/task-definition.json`, so redacting the working copy would cost the screenshot work and buy nothing. An account ID is an identifier rather than a credential, and no secret *values* appear anywhere — Secrets Manager entries appear as ARNs only |
