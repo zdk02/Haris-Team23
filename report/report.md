@@ -896,36 +896,121 @@ bounding how far it can vary.
 
 ## 8. Limitations and future work
 
-**Owner:** **Status:** TODO
+Every limitation below is either measured in §6 or is a design boundary stated in §2. We give
+the number where one exists and name the mechanism where one does not, in the order a reader
+should weigh them rather than the order that flatters us.
 
-> NOTE: Quantified, not hand-waved. Every item gets a number or a mechanism, and each one
-> should point at the section that measures it. §6 now supplies the numbers; this list is the
-> set of items that need writing up, with the measured figure beside each.
-> - Semantic paraphrase — 0% structural, 75% with Presidio (§6.5.1). Coarse taint cannot
->   follow a rewording that discards every token; this motivates the semantic agent.
-> - Obfuscation — the ladder, per rung (§6.4.4). Homoglyph and HTML-entity rungs render as
->   the original identifier to a human reviewer, which is worse than a silent miss. NFKD
->   normalisation plus confusable folding is the fix.
-> - **Identifier split across messages** — 0% structural (§6.4.3). Architectural: lineage
->   tracks resurfacing, not composition. The one attack family where a baseline beats us.
-> - **Partial redaction** — four scenarios ship one identifier scrubbed and another intact
->   while the verdict reads "redacted" (§6.4.1). Redaction is a change guard, not a
->   completeness guard.
-> - **Trusted metadata** — the boundary from §2.3. `forged_session_scope` measures the cost:
->   an attacker who writes their own session scope walks through. Binding the field at the
->   interception adapter is the remedy, as E1/E2 did for `receiver`.
-> - **The false positive we keep** — `internal_handoff`, 24 of 192 (§6.4.3). Failing closed on
->   an undeclared destination is what stops an attacker disabling egress control by deleting a
->   key; a test shows adapter-side binding removes the cost.
-> - No injection detector — and the compositional argument: injection is a per-message content
->   problem that per-agent guardrails already address; our contribution is the cross-agent
->   layer they structurally cannot provide.
-> - Identity is a bearer token: no message integrity, no anti-replay.
-> - Operator auth is a shared token; per-user identity (SSO/IAM) is deployment-era.
-> - Demonstrated on one framework (LangGraph); a second adapter is roadmap.
-> - Self-protection is partial: the keyed chain is not a WORM store.
-> - Presidio recall varies with the names drawn (finding PA-3); unquantified — a multi-seed
->   Presidio-ON sweep is outstanding.
+### What the detector does not catch
+
+**Semantic paraphrase is the ceiling of a token-based taint matcher.** A message that restates
+a record in words sharing no tokens with it carries the information and none of the strings,
+and lineage matching has nothing to compare. The structural configuration prevents 0% of the
+`external_paraphrase` family; enabling Presidio takes it to 75%, because named-entity
+recognition finds the person where a literal matcher finds nothing (§6.5.1). Neither figure is
+a solution. Closing this properly requires a semantic agent that reasons about meaning rather
+than characters, which is the largest single item of future work and the one we deliberately
+did not attempt in the time available (§2.5).
+
+**Encoding defeats matching, and the failure mode is worse than a miss.** The obfuscation ladder
+in §6.4.4 separates cleanly: rungs that change layout are recovered by the matcher's
+normalisation, and rungs that change the characters — reordering, Cyrillic homoglyphs, HTML
+entities, base64 — are not, at 33% prevention across the ladder with either configuration. The
+part that deserves emphasis is not the rate. A homoglyph substitution and an HTML entity both
+render as the original identifier in any browser or mail client, so a human reviewing the
+flagged message sees the real value while the detector saw a different string. A silent miss
+leaves a reviewer uninformed; this leaves a reviewer actively misled. The fix is a decoding and
+normalisation pass — NFKD plus confusable folding, entity and base64 decoding — before matching,
+and it is well-understood work we did not have time to do.
+
+**An identifier split across two messages is an architectural miss, not a tuning problem.**
+Lineage records what a session read and whether it *resurfaces*; it does not record whether
+fragments distributed across separate messages *compose* into something identifying. The
+`split_identifier` family is prevented 0% of the time structurally and 92% with Presidio, and
+it is the one attack family where a reference baseline outperforms Haris (§6.4.3). Closing it
+requires the matcher to consider a session's egress traffic jointly rather than message by
+message, which is a different design rather than a parameter.
+
+**Redaction is a change guard, not a completeness guard.** Where a message carries two
+identifiers and only one is recognised, the message ships partially scrubbed under a verdict
+that reads "redacted". Four scenarios in the corpus do exactly this — recorded as stopped, and
+still leaking (§6.4.1). We surfaced it by scoring delivered content rather than verdicts, which
+is why it appears here as a limitation rather than as four successes.
+
+### What the design trusts
+
+**Metadata arrives from the party we treat as compromised, and one field is still load-bearing.**
+§2.3 gives the field-by-field account of what the adapter binds and what it cannot. The residual
+is measured rather than described: `forged_session_scope` is 24 scenarios in which an attacker
+supplies a session-scope declaration of their own and walks through, and that family cannot be
+labelled from its traffic at all, because a convincing forged declaration is byte-for-byte
+identical to a legitimate one (§6.2). Binding `session_scope` and `recipient` at the interception
+adapter converts this from an open problem into a deployment requirement, exactly as it already
+did for `receiver`.
+
+**We keep a false positive on purpose, and it is 12%.** Every one of the 24 false positives in
+192 benign scenarios is `internal_handoff`: a derived agent-to-agent message with no declared
+recipient (§6.4.3). Treating an undeclared destination as untrusted is what stops an attacker
+disabling egress control by deleting a single metadata key, so the cost buys a property we want.
+A test demonstrates that binding `recipient` at the adapter removes the cost without giving up
+the property. The number stays in the headline table rather than being tuned away.
+
+**No injection detector, by decision.** Prompt injection is a per-message content problem, and
+per-agent guardrails address it today. Our contribution is the cross-agent layer those products
+structurally cannot provide, because they hold no model of the communication graph or of how
+data has moved. Composing Haris with an input guardrail is the correct architecture; shipping a
+weak injection detector would have replaced a documented boundary with an undefended claim
+(§2.5).
+
+### What the identity and audit layers do not provide
+
+**Identity is a bearer token and nothing more.** There is no message integrity and no
+anti-replay: no nonce, no timestamp, so a captured message replays indefinitely. The token is
+also visible in transit to later agents, because the state store hands session history to every
+agent on every hop and the history includes metadata (§2.4). Both are protocol-level gaps that a
+signed envelope with a nonce would close, and neither is closed today.
+
+**The audit log is tamper-evident, not durable.** The chain badge verifies an in-process replay
+of the records the running system holds; it is not a persisted store. A container filesystem is
+ephemeral, so a task replacement takes the log with it. Durability requires an external
+append-capable store — the deployment answer to the same question that write-once storage
+answers for the tamper case — and what the keyed chain buys in the meantime is evidence of
+modification rather than a guarantee of retention. Two limits on the evidence itself, restated
+from §2.4 because they belong in any list of what we do not have: dropping records from the end
+leaves a valid shorter chain, so truncation is caught only against a head hash held outside the
+log, and an attacker who executes code inside Haris can read the key.
+
+**Operator authentication is a shared token.** The dashboard gate is a single secret rather than
+per-user identity, so it establishes that a reader is authorised and not *which* reader. SSO or
+IAM-backed access is deployment-era work and is not built.
+
+**One framework is demonstrated.** The core carries no framework dependency and the LangGraph
+binding is a single adapter, which is the design that makes a second adapter cheap — but cheap
+is not the same as written. Until a second one exists, "framework-agnostic" is an argument from
+structure rather than a demonstrated property.
+
+### What we have not measured
+
+**Presidio recall varies with the names drawn, and we have not bounded it.** Across seeds 23–27
+the structural rates are invariant; with Presidio enabled, prevention moves between 79.2% and
+81.1% across three seeds, because named-entity recognition performs differently on different
+names (§6.6). Three seeds establish that the variation exists. They do not establish how far it
+can go, and a full multi-seed Presidio-on sweep is outstanding.
+
+**The benign traffic is our own.** §6.6 states this as the first threat to validity and it is
+repeated here as a limitation because it bounds the number most likely to be quoted: 12% false
+positives means 12% on traffic this team wrote. The single largest improvement available to this
+work is an evaluation over message logs from a system we did not build.
+
+### Future work, in the order we would do it
+
+Run the evaluation over traffic from a system we did not write, which is the only item that
+bounds the validity of everything above. Add a decoding and normalisation pass to the matcher,
+so that encoded identifiers stop rendering as the original value to a human reviewer. Bind
+`session_scope` and `recipient` at the interception adapter, converting two of the limitations
+above into deployment requirements. Move the audit log to an external append-capable store, and
+the operator gate to per-user identity. Then the two agents named as roadmap throughout — a
+semantic agent for paraphrase, and an injection detector only if the compositional argument in
+§2.5 stops holding. Widening the seed sweep runs alongside all of these and gates none of them.
 
 ## 9. Conclusion
 

@@ -14,9 +14,9 @@ the message is going — is attacker-controlled. See `THREAT_MODEL.md`.
 
 ## Quick start
 
-Five steps from a clean machine to the running operator dashboard. Docker is the supported
-path — the image is the artefact we ship and the one the evaluation numbers were reproduced
-on.
+Four commands from a clean machine to the running operator dashboard. Docker Desktop must be
+running. Docker is the supported path — the image is the artefact we ship and the one the
+evaluation numbers were reproduced on.
 
 ```bash
 git clone https://github.com/zdk02/Haris-Team23.git
@@ -174,6 +174,7 @@ demo_app/
   eval/           # scenario generator, arms, metrics, golden-file guard
   dashboard*.py   # the Streamlit operator view
 tests/            # the full suite
+docs/history/     # phase plans and scaffolding, kept for provenance
 ```
 
 ## Documents
