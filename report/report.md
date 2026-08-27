@@ -439,10 +439,49 @@ coupled.
 
 ### 4.3 The audit log
 
-> NOTE: Append-only, hash-chained, keyed with HMAC; content stored as a SHA-256 reference;
-> blocked content never retained. Say exactly which tampering this detects and which it does
-> not (a keyed chain resists silent rewrite and forged append; truncation is covered by the
-> persisted head hash).
+The audit log is the record of what Haris decided. It is a separate tier from the operational
+log because it answers a different question — not "is the system healthy" but "what was allowed
+through, and on what grounds" — and it is the artefact an incident review reads.
+
+**Append-only and hash-chained.** Each record carries the hash of the record before it, so the
+log is a chain rather than a set of independent lines. With an operator key configured
+(`HARIS_AUDIT_KEY`) each link is an HMAC rather than a plain hash, and the difference matters:
+unkeyed, the chain is *corruption-evident*, because anyone who can write the file can also
+recompute every hash after the line they changed. Keyed, it is *tamper-evident*, because
+recomputing the chain requires the key. The dashboard badge distinguishes the two states rather
+than claiming the stronger property for an unkeyed deployment.
+
+**Content is stored as a reference, not a body.** Each record holds a SHA-256 hash of the
+message content and its metadata. A breach of the log therefore yields hashes and decisions
+rather than the secrets those decisions were about. Delivered content is retained only when
+`store_delivered_content` is explicitly enabled, and **never for a blocked message**. That
+asymmetry is deliberate and was learned rather than designed: an earlier version wrote the
+plaintext of every secret Haris had ever refused into the log, and the dashboard rendered it
+under the heading "delivered payload" for a message that was never delivered. A guard that
+archives what it blocks is a collection point, not a control.
+
+**A blocked hop is recorded here and nowhere else.** Refused messages are never written to the
+lineage store (§3.2), so an attacker who cannot get a single message through cannot bind a
+session to their own data subject and deny service to everyone after them. The audit log still
+records the block, because retaining refusals is exactly its job.
+
+**Precisely which tampering this detects.** A silent rewrite of an existing record is caught,
+because every subsequent link no longer verifies. A forged append is caught, because producing a
+valid next link requires the key. Truncation — dropping records from the *end* — is **not**
+caught by the chain alone, since a shorter chain is still internally valid; it is caught only
+against a reference held outside the log. `AuditLog.checkpoint()` returns that reference, the
+chain head and the record count, and the shipped pipeline emits it to the operational log
+stream, a different destination from the audit file, so whoever can truncate the file cannot
+also rewrite the reference. `verify_checkpoint()` compares them. An attacker who can execute
+code inside the Haris process can read the key, and nothing in this design prevents that;
+write-once storage is the deployment-era answer.
+
+**The chain verifies a replay, not a durable store.** The badge shown in the dashboard confirms
+that the records the running process holds form an unbroken chain. It is not a statement about
+persistence: a persisted audit volume was scoped out of this submission, and a Fargate container
+filesystem is ephemeral, so a task replacement takes the log with it. What the keyed chain buys
+is evidence of modification rather than a guarantee of retention. Durability requires an
+external append-capable store, and it is listed in §8 as such.
 
 ### 4.4 The notification system
 
