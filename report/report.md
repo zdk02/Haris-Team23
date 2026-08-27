@@ -414,14 +414,20 @@ than the same system with enforcement withheld.
 
 ### 3.5 Product shape
 
-The same core ships three ways. As a **library**, wrapping an existing agent graph through an
-adapter. As a **service**, a small HTTP surface with `POST /v1/inspect` and `GET /health`, which
-is also what the container orchestrator needs for health checking. And as a **dashboard**, the
-operator view of the audit log, the lineage graph and the live notification banner — read-only,
-token-gated, and reading the persisted log rather than calling the service, so the two are not
-coupled.
+The same core ships two ways. As a **library**, wrapping an existing agent graph through an
+adapter — this is the primary shape, and the one the evaluation exercises. And as a
+**dashboard**, the operator view of the audit log, the lineage graph and the live notification
+banner: read-only, token-gated, and reading the audit log directly rather than calling a
+separate process.
 
----
+A third shape — a standalone HTTP service exposing `POST /v1/inspect` and `GET /health` — was
+scoped out, and the reason is architectural rather than a matter of time. The health endpoint
+has no caller: the ALB target group already polls the dashboard's own `/_stcore/health`.
+And putting mediation behind a network hop weakens the property §2.3 turns on. Haris's
+decision is authoritative only where the enforcement point is on the data path; a remote
+inspect API is authoritative only if every caller gates its send on the response, and a caller
+that sends first and reports afterwards has reduced the check to advice. The library binding
+puts the decision where the message actually moves.
 
 ## 4. Reliability, logging, audit, and notification
 
