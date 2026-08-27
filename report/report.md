@@ -29,28 +29,121 @@ Submission: 31 August 2026
 
 ## 1. Introduction — problem and motivation
 
-**Owner:** **Status:** TODO
+Production LLM applications are no longer one model behind one prompt. A task is decomposed
+across a team of specialised agents — a retriever that reads records, a summariser that
+condenses them, a mailer that sends the result — which exchange messages, call tools and act
+without a human reading each internal exchange. The frameworks that assemble these systems
+(LangGraph, AutoGen, CrewAI) make the composition cheap, and the traffic between agents is
+correspondingly high-volume and unobserved. A deployment that reviews every model output before
+it reaches a user still reviews none of the messages its agents send each other.
 
-> NOTE: Source material is Intro deck slides 2–5 and the plan's §1.
-> Cover, in order:
-> - Applications are moving from one model to teams of specialised agents that exchange
->   messages and act autonomously, with no human watching each internal exchange.
-> - The risk is not inside one agent — it is in the channel between them: data and secret
->   leakage, unauthorised behaviour, injected instructions travelling between agents.
-> - Existing guardrails (Bedrock Guardrails, NeMo Guardrails) filter one agent's input and
->   output in isolation. They hold no model of the communication graph, the relationships
->   between agents, or the history of how data has moved.
-> - Grounding: the source paper on multi-agent privacy leakage; MAScope (per-message
->   guardrails miss cross-agent attacks); G-Safeguard (model agent interaction as a graph);
->   BreachSeek (multi-agent systems automate offensive security).
-> - Contribution statement — say plainly what is new here: relationship awareness (rules per
->   sender/receiver pair) and trajectory awareness (provenance across hops), plus a measured
->   evaluation against reference baselines rather than a claim.
+**The risk has moved into the channel between agents.** It is not primarily that one agent
+behaves badly in isolation; it is that a message crossing from one agent to the next carries
+data, provenance and authority that no single agent is positioned to judge. Three failures
+follow directly. Sensitive data leaks outward across hops, often in *derived* form — a summary
+that reproduces no verbatim identifier while still being about the record it was written from.
+An agent acts outside its authority, addressing a recipient it should never hold a
+conversation with, or claiming to be an agent it is not. And data belonging to separate
+subjects mixes inside one session, so that one person's record is delivered in a message
+declared to be about another. We assume throughout that **one agent in the system is
+compromised**, and that everything it emits — including the metadata stating who it is and
+where its message is going — is attacker-controlled (§2).
+
+**Existing guardrails are built for a different shape of problem.** Bedrock Guardrails and NeMo
+Guardrails filter one agent's input and output in isolation: they see a message, evaluate it
+against content policy, and return a verdict. They hold no model of the communication graph, no
+notion of which sender–receiver pairs are permissible, and no history of how the data in front
+of them arrived. That architecture is a poor fit for all three failures above. A derived summary
+is innocuous on its face and only suspicious given what the session read four hops earlier. A
+message to a genuinely authorised partner clinic is unobjectionable in content and wrong only
+because of the patient it concerns. A forged sender is undetectable from the message body,
+because the body is exactly what the forger controls.
+
+**This gap is documented rather than assumed.** The source paper on multi-agent privacy leakage
+demonstrates that sensitive data propagates across agent hops in ways single-agent controls do
+not observe [1]. MAScope reports that per-message guardrails miss cross-agent attacks
+specifically because the attack is distributed across messages that are individually clean [2].
+G-Safeguard argues for modelling agent interaction as a graph and reasoning over that structure
+rather than over isolated messages [3]. And BreachSeek shows the pressure from the other
+direction: multi-agent systems are already automating offensive security work, so the
+adversary composing these attacks is itself becoming cheap to build [4].
+
+**Haris is security middleware that sits on the channel.** It intercepts every inter-agent
+message before delivery and returns one of four actions — allow, flag, redact or block — from
+five cooperating security agents. Two properties distinguish it from a per-agent filter.
+*Relationship awareness*: policy is evaluated over the sender–receiver pair and the trust
+boundary, so who is talking to whom is a first-class input rather than something inferred from
+text. *Trajectory awareness*: a lineage graph records what each session has read, so a message
+can be judged on what it is derived from and not only on the characters it contains. Together
+these let Haris answer the derived-summary, wrong-patient and forged-sender cases that a
+stateless content filter cannot reach.
+
+**The claim we make is measured, not asserted.** We evaluate on a generated corpus of 576
+scenarios spanning four domains, three topologies and twenty-four threat families, scored by an
+outcome-based leak metric that reads what each configuration actually *delivered* rather than
+what its detector concluded (§6). We compare against three reference baselines, including one
+deliberately unflattering to us.
+
+**That comparison is the honest headline, and we state it here rather than let a reader
+discover it in §6.** A six-line metadata heuristic that blocks every external recipient
+prevents more exfiltration than Haris does — 100% against 73%. It does so by never reading a
+payload, which is why no amount of paraphrase or encoding defeats it. But it catches **none** of
+the 48 boundary crossings, where Haris catches all of them, and it pays for its egress record
+with a 25% false-positive rate against Haris's 12%: it cannot permit a legitimate partner
+referral, a form template, or a multi-patient ward round. The contribution is not a single
+dominating number. It is a defence that covers a class of violation the blunt instrument is
+structurally blind to, at half the cost in false alarms, with the trade measured in both
+directions.
 
 ### 1.1 Contributions
 
-> NOTE: Four to six bullets, each one falsifiable and each one pointing at the section that
-> demonstrates it.
+- **Relationship- and trajectory-aware mediation for inter-agent traffic.** Security decisions
+  are evaluated over the sender–receiver pair, the trust boundary and a per-session lineage
+  graph, rather than over message content alone. The core (`haris/`) carries no framework
+  dependency; the LangGraph binding is a single adapter. §3 specifies the design; §6.1 tests
+  the app-agnostic claim concretely, by running four different domains on the same agent
+  classes with no per-domain forking.
+
+- **A 576-scenario benchmark with deterministic ground truth and no LLM judge.** Scenarios are
+  generated from declarative descriptions of four multi-agent systems under a fixed seed, so
+  every figure in this report reproduces exactly. Because each secret is synthesised with known
+  values, labels are derived rather than annotated, and no scored result anywhere in §6 depends
+  on a model's opinion. §6.1 describes the generator; §6.2 states where the labels can still be
+  wrong.
+
+- **An outcome-based leak metric that scores delivered content, not verdicts.** A scenario
+  counts as a leak when an identifier reaches an unauthorised recipient in what the arm
+  actually shipped. The distinction is load-bearing rather than pedantic: four scenarios are
+  recorded as stopped and still leak, because partial redaction ships a partially scrubbed
+  message under a "redacted" verdict. A verdict-based metric would have scored all four as
+  successes (§6.4.1).
+
+- **A measured comparison against three reference baselines, including one that beats us.** The
+  four-arm table reports no defence, a content scanner, a metadata heuristic and Haris on the
+  same corpus (§6.4.2). Haris prevents 73% [67–78] of exfiltration against the heuristic's 100%
+  [99–100], and 100% [94–100] of boundary crossings against the heuristic's 0% [0–6], at 12%
+  [8–17] false positives against 25% [19–31]. Boundary crossings are the class no baseline
+  scores above zero on, and they are the differentiator.
+
+- **Every miss accounted for, with no unexplained residue.** All 72 of Haris's exfiltration
+  misses are attributed to a named mechanism — semantic paraphrase, encoding rungs, an
+  identifier split across two messages, degraded rewrite chains, partial redaction — and all 24
+  false positives to a single family kept on purpose, because treating an undeclared
+  destination as untrusted is what stops an attacker disabling egress control by deleting one
+  metadata key (§6.4.3).
+
+- **The trusted-metadata boundary stated, bound where it can be bound, and priced where it
+  cannot.** Metadata arrives from the party this threat model treats as compromised; §2.3 gives
+  the field-by-field table of what the adapter binds and what remains sender-supplied, and
+  charges the residual to the results rather than a footnote. We implemented and measured the
+  strict alternative — treat an absent recipient as external — and report it at 100% prevention,
+  100% false positives and 0% utility. The measurement is itself part of the contribution: it is
+  what shows the permissive default to be a considered position rather than an oversight.
+
+- **Mediation cost measured against a mediation-free floor.** Structural agents add 0.034 ms
+  per hop and the full configuration with Presidio adds 12.5 ms, measured against a no-agents
+  arm that isolates the orchestrator's own overhead from ours (§6.5), with the accuracy that
+  buys quantified in §6.5.1.
 
 ---
 
