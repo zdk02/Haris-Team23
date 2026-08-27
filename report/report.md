@@ -3,27 +3,23 @@
 **Team Haris · Amazon Mentorship Program · American University of Beirut**
 Submission: 31 August 2026
 
----
-
-> **How to use this file.** Every section below is a stub with (a) what belongs in it,
-> (b) where the source material already exists, and (c) an owner and a status. Sections are
-> independent — pick any one marked TODO and write it. Delete the `> NOTE:` blocks as you
-> fill each section in.
->
-> **Status key:** TODO · DRAFT · DONE
->
-> **One rule:** every number in this report must be reproducible by a command we can name
-> next to it. If we cannot name the command, the number does not go in.
-
----
-
 ## Abstract
 
-**Owner:** — **Status:** TODO *(write this LAST)*
-
-> NOTE: 150–200 words. Problem, our approach, the headline evaluation result with its
-> baseline comparison, and the honest limitation. Write it after the evaluation section is
-> final, never before.
+Multi-agent LLM applications decompose a task across specialised agents that exchange messages
+and act without a human reading each internal exchange. Existing guardrails filter one agent's
+input and output in isolation, holding no model of the communication graph and no history of how
+data has moved — so a summary derived from a record read four hops earlier, a message addressed
+to an authorised partner but concerning the wrong person, and a forged sender are all invisible
+to them. We present Haris, security middleware that mediates every inter-agent message and
+decides on the sender–receiver relationship and a per-session lineage graph rather than on
+content alone. We evaluate on 576 generated scenarios across four domains and twenty-four threat
+families, scored by what each configuration actually delivered rather than what its detector
+concluded, against three reference baselines. Haris prevents 73% [67–78] of exfiltration and
+100% [94–100] of boundary crossings at a 12% [8–17] false-positive rate. A six-line metadata
+heuristic prevents more exfiltration — 100% — by blocking every external send, but catches none
+of the 48 boundary crossings and doubles the false positives. The limitation is semantic: a
+paraphrase that discards every token defeats lineage matching, and closing it requires a
+semantic agent we deliberately did not ship untested.
 
 ---
 
@@ -428,6 +424,8 @@ decision is authoritative only where the enforcement point is on the data path; 
 inspect API is authoritative only if every caller gates its send on the response, and a caller
 that sends first and reports afterwards has reduced the check to advice. The library binding
 puts the decision where the message actually moves.
+
+---
 
 ## 4. Reliability, logging, audit, and notification
 
@@ -929,13 +927,51 @@ bounding how far it can vary.
 
 ## 7. Related work
 
-**Owner:** **Status:** TODO
+Four pieces of prior work locate this project, and one class of product defines what it is not.
+We position rather than summarise: for each, what it establishes, and where Haris sits relative
+to it.
 
-> NOTE: Position rather than summarise — for each, say what it establishes and how Haris
-> differs. The source paper (simulation method, and it motivates the problem), MAScope
-> (justifies the provenance design), G-Safeguard (graph/topology axis, complementary
-> defence), BreachSeek (attack-generation inspiration), and the per-agent guardrail products
-> (Bedrock, NeMo) as the thing we compose with rather than replace.
+**The source paper on multi-agent privacy leakage** establishes the problem and supplies the
+method [1]. It demonstrates that sensitive data propagates across agent hops in ways that
+single-agent controls do not observe, and it does so by simulation over synthetic records with
+known injected secrets. Our evaluation follows that method directly — synthetic secrets with
+exactly known values, so ground truth is derived rather than annotated and no model judges any
+scored result (§6.1). Where we differ is what the simulation is for. That work measures leakage
+to characterise the problem; we measure it to compare a defence against alternatives on the same
+corpus, which is why §6.3 exists and why one of its arms outperforms us.
+
+**MAScope** establishes why a per-message guardrail is the wrong shape of tool [2]. Its finding
+is that cross-agent attacks are missed precisely because the attack is distributed across
+messages that are each individually clean — there is no single message a content filter could
+object to. That is the argument for provenance, and it is the reason Haris carries a lineage
+graph rather than a larger pattern list. Our contribution relative to it is a measured cost:
+§6.4.3 reports what lineage catches and what it does not, family by family, including the family
+where a trivial baseline beats it.
+
+**G-Safeguard** establishes the graph as the right object to reason over [3]. It models agent
+interaction topologically and defends at that level, which is the same insight Haris's
+relationship awareness rests on. The two are complementary rather than competing: G-Safeguard
+reasons about the shape of the interaction, while Haris reasons about what data has travelled
+along it. A deployment could sensibly run both, and the topology axis in our corpus — chain,
+star and branch (§6.1) — exists because that work made it a variable worth holding.
+
+**BreachSeek** establishes the pressure from the other direction [4]. Multi-agent systems are
+already being assembled to automate offensive security work, which means the adversary composing
+the attacks in §6.1 is itself becoming cheap to build. We take from it the posture rather than a
+technique: an attacker who can generate attack variants at scale is the reason the obfuscation
+and rewrite ladders in §6.4.4 are graded rather than binary, and the reason we report where the
+ladders defeat us.
+
+**Per-agent guardrail products — Bedrock Guardrails, NeMo Guardrails — are the thing Haris
+composes with, not the thing it replaces.** They filter an agent's input and output against
+content policy, and they do that well. Haris holds no opinion on whether a prompt is adversarial
+and does not try to; the two operate at different layers, and the correct architecture runs both.
+This framing is also our answer to the most obvious question about our scope: we ship no
+injection detector (§2.5) because injection is a per-message content problem those products
+already address, and building a weak one in the time available would have replaced a documented
+boundary with an undefended claim. What no per-agent guardrail can provide, at any quality of
+implementation, is the cross-agent layer — a model of who may talk to whom, and of where the data
+in front of it came from. That gap is what this work occupies.
 
 ---
 
@@ -1059,7 +1095,33 @@ semantic agent for paraphrase, and an injection detector only if the composition
 
 ## 9. Conclusion
 
-**Owner:** **Status:** TODO
+The security problem in a multi-agent system is not located inside any one agent. It is in the
+channel between them, where a message carries data, provenance and authority that no single agent
+is positioned to judge, and where no human is reading. Haris takes that channel as the enforcement
+point: it mediates every inter-agent message and decides on the sender–receiver relationship, the
+trust boundary and a per-session lineage graph, rather than on the characters in front of it.
+
+Measured on 576 generated scenarios spanning four domains and twenty-four threat families, and
+scored by what each configuration actually delivered rather than by what its detector concluded,
+Haris prevents 73% [67–78] of exfiltration attempts and 100% [94–100] of boundary crossings, at a
+12% [8–17] false-positive rate and a mediation cost of 0.034 ms per hop structurally.
+
+Those numbers only mean something against alternatives, so we built three. The result that matters
+most is the one that does not flatter us: a six-line metadata heuristic that never reads a payload
+prevents *more* exfiltration than Haris does — 100% against 73% — because content it never reads
+cannot be paraphrased or encoded past it. It also catches none of the 48 boundary crossings, and
+carries double the false-positive rate, because it cannot distinguish a legitimate partner referral
+from an illegitimate one, or a ward round from an attack. That is the trade this work makes legible
+in both directions: reading payloads and tracking provenance is what buys the violations that never
+leave the building, and reading payloads is exactly what encoding defeats.
+
+The honest limitation is semantic. A message that restates a record in words sharing no tokens with
+it carries the information and none of the strings, and a token-based lineage matcher has nothing
+to compare — 0% prevented structurally, 75% with named-entity detection enabled, and neither figure
+is a solution (§8). Closing it needs an agent that reasons about meaning. We did not build one,
+because an untested detector at submission would have invalidated every number above and replaced a
+documented ceiling with a claim we could not defend. The ceiling, measured and named, is the
+stronger result.
 
 ---
 
@@ -1071,25 +1133,29 @@ semantic agent for paraphrase, and an injection detector only if the composition
 
 ## Appendix A — Reproducing every number in this report
 
-> NOTE: A table of claim → exact command. This is the appendix that makes the rest credible.
-> Keep it in step with §6 — the earlier version of this table cited a 312-scenario corpus and
-> a 24/312 external-check figure, both of which had moved.
->
-> | claim | command |
-> |---|---|
-> | the recorded headline set, with provenance for every figure | `report/RESULTS.md` |
-> | corpus composition, per-family / domain / topology / rung / format breakdowns | `python -m demo_app.eval.runner` |
-> | the four-arm baseline comparison (F1) | `python -m demo_app.eval.baselines` |
-> | Presidio-ON configuration | `python -m demo_app.eval.simulate --secrets` |
-> | mediation cost against a no-agents floor (F4) | `python -m demo_app.eval.latency [--secrets]` |
-> | rates do not depend on the random draw | `python -m demo_app.eval.seed_sweep --seeds 23 24 25 26 27` |
-> | the credential-shaped subset confirmed by a third-party tool | `python -m demo_app.eval.external_check` |
-> | taint-normalisation before/after (F5) | `python -m demo_app.eval.matcher_delta` |
-> | strict missing-recipient policy costs all utility (§2.3) | `python -m demo_app.eval.strict_recipient` |
-> | per-family rates unchanged since the last commit | `pytest tests/test_eval_sim.py` |
-> | the labeller can fail | `pytest tests/test_label_check_mutation.py` |
-> | audit chain resists rewrite, forged append and truncation | `pytest tests/test_audit.py` |
-> | the figures are drawn from the harness, not transcribed | `python -m demo_app.eval.figures` |
+Every figure and rate in this report is produced by one of the commands below. Run from the repo
+root with the environment described in the README; the corpus is generated deterministically under
+seed 23, so results are reproducible exactly rather than approximately.
+
+| claim | command |
+|---|---|
+| the recorded headline set, with provenance for every figure | `report/RESULTS.md` |
+| corpus composition, per-family / domain / topology / rung / format breakdowns | `python -m demo_app.eval.runner` |
+| the four-arm baseline comparison (F1) | `python -m demo_app.eval.baselines` |
+| Presidio-ON configuration | `python -m demo_app.eval.simulate --secrets` |
+| mediation cost against a no-agents floor (F4) | `python -m demo_app.eval.latency [--secrets]` |
+| rates do not depend on the random draw | `python -m demo_app.eval.seed_sweep --seeds 23 24 25 26 27` |
+| the credential-shaped subset confirmed by a third-party tool | `python -m demo_app.eval.external_check` |
+| taint-normalisation before/after (F5) | `python -m demo_app.eval.matcher_delta` |
+| strict missing-recipient policy costs all utility (§2.3) | `python -m demo_app.eval.strict_recipient` |
+| per-family rates unchanged since the last commit | `pytest tests/test_eval_sim.py` |
+| the labeller can fail | `pytest tests/test_label_check_mutation.py` |
+| audit chain resists rewrite, forged append and truncation | `pytest tests/test_audit.py` |
+| the figures are drawn from the harness, not transcribed | `python -m demo_app.eval.figures` |
+
+If a claim in this report has no command beside it here, it should not be in the report.
+
+---
 
 ## Appendix B — Deployment artefacts
 
