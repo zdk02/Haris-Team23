@@ -625,8 +625,16 @@ def main():
     st.session_state.setdefault("sel", 0)
 
     _topbar(mode, scenario, data.get("chain"))
-    _alert_banner(data.get("incidents", []))
-    
+    # The banner is scoped to the selected scenario. Reading the unfiltered feed meant
+    # picking a clean scenario still showed another scenario's blocks — a contradiction
+    # visible on one screen. Session ids come from the already-filtered records, so the
+    # banner and the panels below it can never disagree about what is selected.
+    incidents = data.get("incidents", [])
+    if scenario != "All scenarios":
+        selected_ids = {r["session_id"] for r in recs}
+        incidents = [i for i in incidents if i.get("session_id") in selected_ids]
+    _alert_banner(incidents)
+
     if page == "Overview":
         _kpis(kpis)
         left, right = st.columns([1.55, 1], gap="large")
