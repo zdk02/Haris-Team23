@@ -31,7 +31,7 @@ from haris.logging_config import configure_logging
 
 from demo_app.dashboard_data import (
     COLOR, ACTION_COLOR, get_dashboard, presidio_available,
-    compute_kpis, compute_modules, build_graph,
+    compute_kpis, compute_modules, build_graph, INTERNAL_DOMAIN,
 )
 from haris.schemas.policy import Mode
 
@@ -160,6 +160,27 @@ div[data-testid="stVerticalBlock"] .stButton>button:hover{ background:var(--surf
 .alertbar .ab-item .sev{ font-weight:600; }
 .alertbar .ab-item .sev.critical{ color:var(--block); } .alertbar .ab-item .sev.warning{ color:var(--flag); }
 .alertbar .ab-item .ts{ color:var(--text-dim); margin-left:auto; }
+/* --- lineage trace (S4) --- */
+.trace{ display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:6px 0 18px; }
+.trace .tnode{ background:var(--surface-2); border:1px solid var(--hairline-soft);
+  border-radius:10px; padding:10px 13px; min-width:132px; }
+.trace .tnode.origin{ border-color:rgba(245,184,81,.45); background:var(--flag-dim); }
+.trace .tnode.egress-ext{ border-color:rgba(255,92,114,.45); background:var(--block-dim); }
+.trace .tnode.egress-int{ border-color:rgba(53,214,164,.4); background:var(--allow-dim); }
+.trace .tname{ font-family:var(--f-mono); font-size:12px; color:var(--text); }
+.trace .trole{ font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--text-dim); margin-bottom:5px; }
+.trace .tbadges{ display:flex; flex-wrap:wrap; gap:4px; margin-top:7px; }
+.trace .tb{ font-family:var(--f-mono); font-size:9.5px; padding:2px 6px; border-radius:5px;
+  background:var(--surface-3); color:var(--text-mut); }
+.trace .tb.taint{ color:var(--sensitive); background:var(--sensitive-dim); }
+.trace .tb.blk{ color:var(--block); background:var(--block-dim); }
+.trace .tb.rdc{ color:var(--sensitive); background:var(--sensitive-dim); }
+.trace .tarrow{ display:flex; flex-direction:column; justify-content:center;
+  padding:0 9px; font-family:var(--f-mono); font-size:11px; color:var(--text-dim); }
+.trace .tarrow .act{ font-size:9px; letter-spacing:.08em; text-align:center; }
+.trace .tarrow.blocked{ color:var(--block); font-weight:700; }
+.trace-note{ font-size:11.5px; color:var(--text-dim); margin:-8px 0 20px; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -530,6 +551,81 @@ def _inspector(records):
         unsafe_allow_html=True)
 
 
+def _lineage_trace(records):
+    """S4 — the real lineage view: one horizontal trace per session, showing where the
+    sensitive data entered, which hops carried it, and what happened at the boundary.
+
+    Badges name the data TYPE and the agent that objected, never a value. That is the
+    same rule the audit log follows (THREAT_MODEL.md): the operator view must not become
+    a second copy of the secret."""
+    if not records:
+        st.info("No hops for this scenario.")
+        return
+
+    st.markdown('<div class="panel-head"><h2>Data lineage</h2>'
+                '<span class="hint">— where sensitive data entered, and where it was stopped</span>'
+                '</div>', unsafe_allow_html=True)
+    st.markdown('<div class="trace-note">Badges show data types and the agents that '
+                'objected. Values are never rendered — the audit log stores a hash, and so '
+                'does this view.</div>', unsafe_allow_html=True)
+
+    # Group by session, preserving the order hops actually occurred in.
+    sessions: list[str] = []
+    for r in records:
+        if r["session_id"] not in sessions:
+            sessions.append(r["session_id"])
+
+    for sid in sessions:
+        hops = [r for r in records if r["session_id"] == sid]
+        st.markdown(f'<div class="label-dim">{html.escape(hops[0]["session"])}</div>',
+                    unsafe_allow_html=True)
+
+        parts = []
+        first = hops[0]
+        origin_badges = f'<span class="tb taint">{html.escape(str(first["data_type"]))}</span>'
+        if first["data_subject"]:
+            origin_badges += f'<span class="tb">{html.escape(str(first["data_subject"]))}</span>'
+        parts.append('<div class="tnode origin"><div class="trole">origin</div>'
+                     f'<div class="tname">{html.escape(str(first["sender"]))}</div>'
+                     f'<div class="tbadges">{origin_badges}</div></div>')
+
+        for hop in hops:
+            objected = [v for v in hop["verdicts"] if v["label"] in ("flag", "block")]
+            act = hop["action"]
+            arrow_cls = "tarrow blocked" if act == "block" else "tarrow"
+            glyph = "✕" if act == "block" else "→"
+            parts.append(f'<div class="{arrow_cls}"><div>{glyph}</div>'
+                         f'<div class="act">{html.escape(act.upper())}</div></div>')
+
+            badges = f'<span class="tb taint">{html.escape(str(hop["data_type"]))}</span>'
+            for v in objected:
+                cls = "blk" if v["label"] == "block" else ""
+                badges += (f'<span class="tb {cls}">'
+                           f'{html.escape(str(v["agent_label"]))}</span>')
+            if hop["action"] == "redact":
+                badges += '<span class="tb rdc">redacted</span>'
+            parts.append(f'<div class="tnode"><div class="trole">hop {hop["hop"]}</div>'
+                         f'<div class="tname">{html.escape(str(hop["receiver"]))}</div>'
+                         f'<div class="tbadges">{badges}</div></div>')
+
+            if hop["recipient"]:
+                ext = not str(hop["recipient"]).endswith(INTERNAL_DOMAIN)
+                cls = "egress-ext" if ext else "egress-int"
+                label = "external" if ext else "internal"
+                verdict = ("✕ INTERCEPTED" if hop["action"] == "block"
+                           else "redacted" if hop["action"] == "redact" else "delivered")
+                vcls = ("blk" if hop["action"] == "block"
+                        else "rdc" if hop["action"] == "redact" else "")
+                parts.append(f'<div class="{arrow_cls}"><div>{glyph}</div>'
+                             f'<div class="act">EGRESS</div></div>')
+                parts.append(f'<div class="tnode {cls}"><div class="trole">{label}</div>'
+                             f'<div class="tname">{html.escape(str(hop["recipient"]))}</div>'
+                             f'<div class="tbadges"><span class="tb {vcls}">'
+                             f'{verdict}</span></div></div>')
+
+        st.markdown(f'<div class="trace">{"".join(parts)}</div>', unsafe_allow_html=True)
+
+
 def _modules(modules):
     st.markdown('<div class="panel-head"><h2>Security checks</h2>'
                 '<span class="hint">— run on every intercepted message</span></div>',
@@ -667,8 +763,7 @@ def main():
             _inspector(recs)
 
     elif page == "Data Lineage":
-        _stream(recs)
-        st.markdown("<br>", unsafe_allow_html=True)
+        _lineage_trace(recs)
         _inspector(recs)
 
     elif page == "Audit Log":
