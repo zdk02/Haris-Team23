@@ -1228,6 +1228,7 @@ seed 23, so results are reproducible exactly rather than approximately.
 | rates do not depend on the random draw | `python -m demo_app.eval.seed_sweep --seeds 23 24 25 26 27` |
 | the credential-shaped subset confirmed by a third-party tool | `python -m demo_app.eval.external_check` |
 | taint-normalisation before/after (F5) | `python -m demo_app.eval.matcher_delta` |
+| which agent objects in which family (Appendix C) | `python -m demo_app.eval.agent_matrix [--secrets]` |
 | strict missing-recipient policy costs all utility (§2.3) | `python -m demo_app.eval.strict_recipient` |
 | per-family rates unchanged since the last commit | `pytest tests/test_eval_sim.py` |
 | the labeller can fail | `pytest tests/test_label_check_mutation.py` |
@@ -1244,5 +1245,133 @@ If a claim in this report has no command beside it here, it should not be in the
 
 ## Appendix C — Agent × threat matrix
 
-> NOTE: The who-catches-what table, moved here from the dashboard (see `SCOPE_FREEZE.md`),
-> mapped onto the final evaluation results rather than the old curated set.
+    python -m demo_app.eval.agent_matrix              # structural agents
+    python -m demo_app.eval.agent_matrix --secrets    # with Presidio
+
+Earlier versions of this project carried a hand-written version of this table over the nine
+curated hospital cases, asserting which agent was *supposed* to catch each threat. What
+follows is measured instead: every one of the 576 generated scenarios is replayed through the
+full line-up, and the table records which agents actually objected — FLAG, REDACT or BLOCK —
+at the scenario's **decisive hop**, the same scoping §6 uses.
+
+The runs are in MONITOR. A block in ENFORCE halts the flow, which would leave no decision to
+inspect on exactly the hops Haris catches hardest; monitor runs every agent and records every
+verdict while stopping nothing, and the mode gate is applied last, so the verdicts are
+identical (§3.4).
+
+**Objecting is not the same as acting.** A cell counts an agent raising a concern, not the
+final decision. Whether an objection becomes a block, a redaction or a logged flag is the
+policy engine's business, and it depends on the trust boundary: the Secrets & PII agent
+flagging PHI on an *internal* hop is correct behaviour that is logged and delivered unchanged.
+That is why several benign families below show objections while their false-positive rate in
+§6.4.3 is zero. Read this table as *who saw something*, and §6.4.3 as *what happened next*.
+
+### C.1 Structural agents (Presidio off — the configuration §6.4 reports)
+
+| family | n | Secrets & PII | Authorization | Data-Subject | Info-Flow | Identity |
+|---|---|---|---|---|---|---|
+| `authorized_external` | 24 | — | — | — | — | — |
+| `deep_chain` | 24 | — | — | — | 24/24 | — |
+| `external_credential` | 24 | — | — | — | 24/24 | — |
+| `external_derived` | 24 | — | — | — | 24/24 | — |
+| `external_obfuscated` | 24 | — | — | — | 8/24 | — |
+| `external_paraphrase` | 24 | — | — | — | — | — |
+| `external_verbatim` | 24 | — | — | — | 24/24 | — |
+| `forged_session_scope` | 24 | — | — | — | — | — |
+| `internal_clean` | 24 | — | — | — | — | — |
+| `internal_derived` | 24 | — | — | — | — | — |
+| `internal_handoff` | 24 | — | — | — | 24/24 | — |
+| `multi_subject_workflow` | 24 | — | — | — | — | — |
+| `near_miss_benign` | 24 | — | — | — | — | — |
+| `partner_scope_violation` | 24 | — | — | — | 24/24 | — |
+| `policy_egress` | 24 | — | 24/24 | — | 24/24 | — |
+| `public_reference` | 24 | — | — | — | — | — |
+| `record_format` | 24 | — | — | — | 24/24 | — |
+| `rewrite_chain` | 24 | — | — | — | 20/24 | — |
+| `same_subject` | 24 | — | — | — | — | — |
+| `split_identifier` | 24 | — | — | — | — | — |
+| `spoof` | 24 | — | — | — | — | 24/24 |
+| `stored_then_forwarded` | 24 | — | — | — | 24/24 | — |
+| `subject_forgery` | 24 | — | — | 24/24 | — | — |
+| `subject_mismatch` | 24 | — | — | 24/24 | — | — |
+
+### C.2 With Presidio enabled
+
+| family | n | Secrets & PII | Authorization | Data-Subject | Info-Flow | Identity |
+|---|---|---|---|---|---|---|
+| `authorized_external` | 24 | 23/24 | — | — | — | — |
+| `deep_chain` | 24 | 23/24 | — | — | 24/24 | — |
+| `external_credential` | 24 | 24/24 | — | — | 24/24 | — |
+| `external_derived` | 24 | 24/24 | — | — | 24/24 | — |
+| `external_obfuscated` | 24 | — | — | — | 8/24 | — |
+| `external_paraphrase` | 24 | 18/24 | — | — | — | — |
+| `external_verbatim` | 24 | 22/24 | — | — | 24/24 | — |
+| `forged_session_scope` | 24 | 19/24 | — | — | — | — |
+| `internal_clean` | 24 | — | — | — | — | — |
+| `internal_derived` | 24 | 23/24 | — | — | — | — |
+| `internal_handoff` | 24 | 23/24 | — | — | 24/24 | — |
+| `multi_subject_workflow` | 24 | 24/24 | — | — | — | — |
+| `near_miss_benign` | 24 | — | — | — | — | — |
+| `partner_scope_violation` | 24 | 23/24 | — | — | 24/24 | — |
+| `policy_egress` | 24 | 22/24 | 24/24 | — | 24/24 | — |
+| `public_reference` | 24 | — | — | — | — | — |
+| `record_format` | 24 | 19/24 | — | — | 24/24 | — |
+| `rewrite_chain` | 24 | 23/24 | — | — | 20/24 | — |
+| `same_subject` | 24 | 22/24 | — | — | — | — |
+| `split_identifier` | 24 | 13/24 | — | — | — | — |
+| `spoof` | 24 | 22/24 | — | — | — | 24/24 |
+| `stored_then_forwarded` | 24 | 22/24 | — | — | 24/24 | — |
+| `subject_forgery` | 24 | 17/24 | — | 24/24 | — | — |
+| `subject_mismatch` | 24 | 22/24 | — | 24/24 | — | — |
+
+### C.3 What the measured table says
+
+**The structural configuration is sharply specialised, and that is the design working.** In
+C.1 every objection is attributable: Info-Flow answers the exfiltration families, Data-Subject
+answers the two boundary-crossing families, Identity answers `spoof`. No agent objects outside
+its remit, and no benign family draws an objection at all. A hand-written matrix would have
+predicted roughly this shape — the point is that it was measured rather than asserted.
+
+**The content detector is broad and the structural agents are what discriminate.** Enabling
+Presidio adds an objection in almost every family, including benign ones: `authorized_external`
+23/24, `multi_subject_workflow` 24/24, `same_subject` 22/24. Those families have a 0%
+false-positive rate (§6.4.3), because a PII flag on a legitimate internal hop is logged and
+delivered, not blocked. Named-entity recognition finds people in messages that are *about*
+people, which is nearly all of them; what makes a decision is the trust boundary and the
+lineage. This is the clearest single piece of evidence for the argument in §1: a content filter
+alone cannot separate the traffic, because it objects to almost all of it.
+
+**Three families draw no PII objection even with Presidio on**, and they are the right three.
+`internal_clean` and `public_reference` contain nothing identifying. `near_miss_benign` is the
+referral-form template whose identifier-shaped values belong to nobody — the case built to
+catch a detector that reasons from shape rather than provenance, and the detector does not take
+it. `external_obfuscated` is a fourth, for the opposite reason: encoding defeats named-entity
+recognition exactly as it defeats a literal matcher (§6.5.1).
+
+**Two rows contradict our own design documents, and the measurement wins.** §2.2 credits the
+Authorization agent with egress control on the direct-leak families, and §3.3 credits it with
+the per-subject data-sharing agreement that makes `partner_scope_violation` catchable. The
+table shows Authorization objecting in exactly one family — `policy_egress` — and Info-Flow
+carrying `external_verbatim`, `external_derived`, `external_credential`,
+`stored_then_forwarded` and `partner_scope_violation` on its own. The outcome is unchanged:
+those families are still prevented at the rates §6.4.3 reports. What is wrong is the
+attribution, and it was wrong in the direction that flatters a tidy architecture diagram —
+each threat handled by the agent named after it. In the shipped system the information-flow
+agent's egress check is doing more of the work than the design intended, and Authorization is
+narrower than described. **§2.2 and §3.3 should be read as corrected by this table.**
+
+**One number here should be reconciled before it is quoted.** `split_identifier` draws a PII
+objection in 13 of 24 scenarios with Presidio on, while §6.5.1 reports that family at 92%
+prevented in the same configuration. Objection at the decisive hop and prevention of the leak
+are different measurements — a redaction on an earlier hop can prevent without objecting at
+the last one — but the gap is wide enough that we flag it rather than explain it away. The
+prevention figure is the one produced by the scored harness and is the one to quote; this cell
+is a census of objections and should not be read as a prevention rate.
+
+**What the table cannot show.** It records objections, not their strength, and a family caught
+24/24 by one agent has no redundancy: remove Info-Flow and eleven families lose their only
+structural detector. That concentration is a design property worth naming — the agents are
+deliberately independent, and the policy engine takes the most restrictive verdict (§3.4), so
+a single agent's block stands alone. It is also why a detector crash fails closed in enforce
+(§4.1): with this much concentration, a missing agent is a missing defence rather than a
+degraded one.
