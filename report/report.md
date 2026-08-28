@@ -429,17 +429,62 @@ puts the decision where the message actually moves.
 
 ## 4. Reliability, logging, audit, and notification
 
-**Owner:** **Status:** TODO
-
-> NOTE: This section is where the non-functional requirements live. Source: Phase 3 tasks
-> 2, 5, 7 and the Phase 4 notification workstream.
+A security guard that fails silently is worse than no guard, because the system continues to
+look protected. This section covers what Haris does when something inside it breaks, what it
+writes down and where, and how a failure or a caught attack reaches a person.
 
 ### 4.1 Failure semantics — fail-open in monitor, fail-closed in enforce
 
-> NOTE: Be precise about coverage: the guard wraps agent execution. State what it does not
-> yet wrap.
+Detectors crash. Presidio may raise on a pathological input, a matcher may hit an unexpected
+type, and a security layer whose own bug takes down the protected application has caused more
+damage than the attack it was watching for. Every agent therefore runs inside a reliability
+guard (`Orchestrator._safe_check`), and a raised exception becomes a *synthetic verdict* rather
+than an exception the application sees.
 
-### 4.2 Two-tier logging — operational vs security-audit
+**The direction of failure follows the mode, and this is the whole point of the design.** In
+ENFORCE, a crashed detector returns `BLOCK`: the message is stopped, because a check that did
+not run cannot be said to have passed. In MONITOR, it returns `FLAG`: the message is delivered
+and the failure is recorded, because monitor mode's contract is that it never stops traffic —
+including when Haris itself is the thing that is broken. Failing closed in monitor mode would
+make monitor a different system rather than the same system with enforcement withheld (§3.4).
+
+**The crash is recorded as that agent's verdict**, so it appears in the audit trail and on the
+dashboard exactly where a real verdict would. A detector that is down is visible as a down
+detector rather than as a silently reduced set of checks — the failure mode where a guard keeps
+returning "allow" because one of its five agents quietly stopped running.
+
+**Coverage, stated precisely, because the guard does not wrap everything.** `_safe_check` wraps
+one agent's `check()` call and nothing else. The rest of the pipeline runs outside it: the
+context fetch from the state store, the policy engine's resolution of verdicts into a decision,
+the lineage write, the audit append, and the interception adapter itself. An exception raised in
+any of those propagates to the calling application. The reasoning is that those components are
+Haris's own control path rather than pluggable detectors — a corrupted audit append or a failed
+policy resolution is not a condition that should be converted into a verdict and continued
+past — but the consequence is worth naming: **agent failures are contained, framework failures
+are not.** Extending the guard to the write path, with a defined behaviour for a failed audit
+append, is outstanding work.
+
+### 4.2 Two-tier logging — operational versus security-audit
+
+Haris keeps two logs, deliberately separate, answering two different questions.
+
+**Tier 1, operational** (`haris/logging_config.py`) answers *is anything going wrong inside
+Haris?* Startup, configuration, agent crashes from the guard above, and unexpected errors. It is
+written for whoever is debugging Haris, so it can be verbose and widely readable — and it
+therefore records **metadata only**: sender, receiver, action, an agent's error type. Never a
+message body, never a secret. That constraint is what makes it safe to ship to ordinary log
+infrastructure; on Fargate it goes to stderr and the awslogs driver forwards it to CloudWatch.
+
+**Tier 2, security-audit** (`haris/audit.py`, §4.3) answers *what did Haris decide, and why?* It
+is the hash-chained record of every inter-agent decision. It concerns the protected traffic, so
+it is minimised, tamper-evident, and gated behind the dashboard's operator token.
+
+**The split is a security property, not tidiness.** The two logs have opposite handling
+requirements: one should be widely readable, the other should not, and merging them would force
+the permissive treatment onto the sensitive record. It also gives the audit log's truncation
+defence somewhere to stand — the chain checkpoint is emitted to the operational stream (§4.3),
+a destination controlled separately from the audit file, so an attacker who can truncate one
+cannot silently rewrite the reference that would expose it.
 
 ### 4.3 The audit log
 
@@ -489,9 +534,45 @@ external append-capable store, and it is listed in §8 as such.
 
 ### 4.4 The notification system
 
-> NOTE: Trigger taxonomy → Notifier → channels. De-duplication, severity routing, the single
-> sanitisation choke point, per-channel failure isolation. CI: GitHub Actions on every push,
-> failure notification, CODEOWNERS. Source: `NOTIFICATIONS.md`.
+An audit log that nobody opens is not detection. The notifier exists so that a caught attack or
+a broken guard reaches a person rather than sitting in a file.
+
+**Triggers.** Notifications are raised at named points in the pipeline rather than by scanning
+the log afterwards. A detector crash raises `CRITICAL` from the reliability guard (§4.1),
+carrying which agent failed, the error type, and whether the pipeline failed closed or open. A
+blocked security decision raises `WARNING`. Health-check failures raise `CRITICAL`. Each event
+is a `NotificationEvent` with a severity, a category, a source, a session id, and a summary.
+
+**Dispatch.** The `Notifier` fans one event out to its configured channels. Two mechanisms sit
+between the trigger and the channels. *Severity routing:* each channel declares a
+`min_severity`, ranked `INFO < WARNING < CRITICAL`, so a channel meant for genuine incidents is
+not woken by routine flags. *De-duplication:* repeat events are suppressed on a key derived from
+the event, so a detector crashing on every hop of a long session produces one alert rather than
+one per message. The de-dup table is capped at 1,000 keys, which is a deliberate choice rather
+than an arbitrary one: the notifier lives for the life of the process — days, in the deployed
+dashboard — and an unbounded dictionary keyed by summary text is a slow memory leak in the one
+component whose job is to still be working when everything else is not.
+
+**One sanitisation choke point.** Alerts carry a content *reference* — a hash — and sanitised
+text, never the message body and never the secret. The stripping happens in one place on the way
+out to the channels rather than in each channel, so a new channel cannot introduce a leak by
+forgetting to sanitise. The rule this enforces is simple and worth stating plainly: **the alert
+channel must not become the leak.** A guard that emails the secret it just blocked has moved the
+data rather than stopped it.
+
+**Per-channel isolation.** Each channel's `send()` runs behind its own guard, in the same spirit
+as the orchestrator's. A webhook that times out must not take down the protected application and
+must not suppress the other channels — a broken alerter is not permitted to become an outage.
+The shipped configuration pairs a `BufferChannel`, which is zero-config and feeds the
+dashboard's alert banner, with a `WebhookChannel` for a team chat destination.
+
+**Who is notified when the integration tests fail.** This was asked directly, and the answer is
+three-layered. GitHub emails whoever pushed the failing commit — built in, no configuration.
+The workflow then posts the failure to the team channel using Haris's own `WebhookChannel`, so
+the CI alert is formatted identically to a runtime alert and exercises the same code path; if
+the repository secret is unset the post is a silent no-op and never fails the job, so a missing
+webhook cannot manufacture a red build. And `CODEOWNERS` records who owns which part of the
+tree, so *whose job it is* to fix a red build is written down rather than assumed.
 
 ---
 
