@@ -8,9 +8,9 @@ Submission: 31 August 2026
 Multi-agent LLM applications decompose a task across specialised agents that exchange messages
 and act without a human reading each internal exchange. Existing guardrails filter one agent's
 input and output in isolation, holding no model of the communication graph and no history of how
-data has moved — so a summary derived from a record read four hops earlier, a message addressed
-to an authorised partner but concerning the wrong person, and a forged sender are all invisible
-to them. We present Haris, security middleware that mediates every inter-agent message and
+data has moved — so a summary derived from a record read four hops earlier, and a message
+addressed to an authorised partner but concerning the wrong person, are both invisible to
+them. We present Haris, security middleware that mediates every inter-agent message and
 decides on the sender–receiver relationship and a per-session lineage graph rather than on
 content alone. We evaluate on 576 generated scenarios across four domains and twenty-four threat
 families, scored by what each configuration actually delivered rather than what its detector
@@ -806,6 +806,14 @@ what a session read and whether it *resurfaces*, not whether fragments across se
 *compose*. Closing it requires the matcher to consider a session's egress traffic jointly,
 which is a different design.
 
+**One denominator needs explaining, because it looks like an inconsistency and is not.**
+`forged_session_scope` appears with n=24 in the per-family table and contributes 0 to the
+exfiltration denominator in §6.4.2. Both are right: the family is a policy violation with no
+leak path, so its 24 scenarios sit in the 72 counted under that heading in §6.1 rather than in
+the 264 exfiltration scenarios. It therefore has a detection rate and no prevention rate —
+there is nothing to prevent, because nothing in it would leave the system unmediated. The same
+reading applies to every family the runner prints with a dash in the prevention column.
+
 The false-positive rate is 24 of 192, and every one is `internal_handoff`: a derived
 agent-to-agent message with no declared recipient. **We keep it deliberately.** Treating an
 undeclared destination as untrusted is what stops an attacker disabling egress control by
@@ -886,7 +894,10 @@ level of its degradation chain is recovered by the same normalisation.
 **[FIGURE F4 — `report/figures/fig4-latency.svg`]**
 
 **CPU: AMD64 Family 25 Model 80 (AuthenticAMD), Windows 11, Python 3.13.4.** These figures are
-machine-specific and should be quoted with the hardware.
+machine-specific and should be quoted with the hardware. They are also measured on a different
+platform from the one we ship: the deployed artefact is Linux on Python 3.11 inside a
+container. We did not re-measure there, so read these as the *shape* of the mediation cost —
+structural agents negligible, Presidio dominant — rather than as the deployed number.
 
 | arm | median | IQR | mediation cost |
 |---|---|---|---|
