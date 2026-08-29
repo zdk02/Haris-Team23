@@ -181,6 +181,46 @@ div[data-testid="stVerticalBlock"] .stButton>button:hover{ background:var(--surf
 .trace .tarrow .act{ font-size:9px; letter-spacing:.08em; text-align:center; }
 .trace .tarrow.blocked{ color:var(--block); font-weight:700; }
 .trace-note{ font-size:11.5px; color:var(--text-dim); margin:-8px 0 20px; }
+/* --- incidents & health (S3) --- */
+.hstrip{ display:flex; align-items:center; gap:12px; padding:13px 16px; border-radius:12px;
+  border:1px solid; margin:2px 0 14px; }
+.hstrip.ok{ background:var(--allow-dim); border-color:rgba(53,214,164,.32); }
+.hstrip.bad{ background:var(--block-dim); border-color:rgba(255,92,114,.42); }
+.hstrip .hs-t{ font-family:var(--f-display); font-weight:600; font-size:14px; }
+.hstrip.ok .hs-t{ color:var(--allow); } .hstrip.bad .hs-t{ color:var(--block); }
+.hstrip .hs-s{ font-size:11.5px; color:var(--text-mut); margin-left:auto;
+  font-family:var(--f-mono); }
+.optbl{ border:1px solid var(--hairline-soft); border-radius:11px; overflow:hidden;
+  margin:4px 0 20px; }
+.optbl .row{ display:grid; gap:12px; padding:9px 14px; align-items:center;
+  border-top:1px solid var(--hairline-soft); font-size:12.5px; }
+.optbl .row:first-child{ border-top:none; background:var(--surface-2);
+  font-family:var(--f-mono); font-size:10px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--text-mut); }
+.optbl .row.r3{ grid-template-columns:190px 110px 1fr; }
+.optbl .row.r4{ grid-template-columns:150px 160px 130px 1fr; }
+.optbl .mono{ font-family:var(--f-mono); color:var(--text); }
+.optbl .dim{ color:var(--text-dim); font-size:11.5px; }
+.optbl .ok{ color:var(--allow); font-family:var(--f-mono); font-size:11.5px; font-weight:600; }
+.optbl .bad{ color:var(--block); font-family:var(--f-mono); font-size:11.5px; font-weight:600; }
+.optbl .off{ color:var(--flag); font-family:var(--f-mono); font-size:11.5px; }
+.feed{ border:1px solid var(--hairline-soft); border-radius:11px; overflow:hidden;
+  margin:4px 0 18px; }
+.feed .fi{ display:grid; grid-template-columns:82px 110px 1fr 96px 78px; gap:12px;
+  padding:10px 14px; border-top:1px solid var(--hairline-soft); align-items:center;
+  font-size:12.5px; }
+.feed .fi:first-child{ border-top:none; }
+.feed .fi .sv{ font-family:var(--f-mono); font-size:10px; font-weight:600;
+  letter-spacing:.08em; padding:3px 7px; border-radius:5px; text-align:center; }
+.feed .fi .sv.critical{ color:var(--block); background:var(--block-dim); }
+.feed .fi .sv.warning{ color:var(--flag); background:var(--flag-dim); }
+.feed .fi .sv.info{ color:var(--text-mut); background:var(--surface-3); }
+.feed .fi .cat{ font-family:var(--f-mono); font-size:11px; color:var(--text-dim); }
+.feed .fi .ses{ font-family:var(--f-mono); font-size:11px; color:var(--text-mut); }
+.feed .fi .ts{ font-family:var(--f-mono); font-size:11px; color:var(--text-dim);
+  text-align:right; }
+.feed .empty{ padding:18px 14px; color:var(--text-mut); font-size:12.5px; }
+.s3note{ font-size:11.5px; color:var(--text-dim); margin:-12px 0 22px; line-height:1.65; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -249,7 +289,8 @@ def _sidebar():
 
     st.sidebar.caption("MONITOR")
     page = st.sidebar.radio("Section", ["Overview", "Agent Graph", "Live Traffic",
-                                        "Data Lineage", "Audit Log"],
+                                        "Data Lineage", "Audit Log",
+                                        "Incidents & Health"],
                             label_visibility="collapsed")
     st.sidebar.markdown("---")
     st.sidebar.caption("CONTROL")
@@ -301,17 +342,37 @@ def _topbar(mode, scenario, chain=None):
         f'{_chain_pill(chain)}</div>',
         unsafe_allow_html=True)
 
-def _alert_banner(incidents):
+def _alert_banner(incidents, health=None):
     """Phase 4 — the always-on operator view of the notification system. Renders whatever
     alerts Haris raised this run (blocked leaks = WARNING, a detector crash / Haris-down =
     CRITICAL). Reads the sanitized incident feed from the data layer, so no message content
-    ever reaches the banner."""
+    ever reaches the banner.
+
+    S3 — the quiet state now reports a MEASURED result rather than an inferred one. This
+    banner used to read "all systems healthy" whenever no incident had been raised, which
+    is a different claim: an empty feed says nothing was detected, not that the detector is
+    working. It now names how many probes ran (§4.1), and a failing probe turns the banner
+    red even on a scenario that raised no alert of its own — because a broken guard on a
+    clean-looking scenario is exactly the state a green banner would hide."""
     crit = [i for i in incidents if i["severity"] == "critical"]
     warn = [i for i in incidents if i["severity"] == "warning"]
-    if not incidents:
+    health = health or {}
+    probes = health.get("checks") or {}
+    failures = health.get("failures") or []
+    if failures:
         st.markdown(
-            '<div class="alertbar ok"><div class="ab-head">✓ &nbsp;All systems healthy '
-            '— no security incidents this run.</div></div>', unsafe_allow_html=True)
+            f'<div class="alertbar crit"><div class="ab-head">⛔ &nbsp;Haris health check '
+            f'FAILING — {html.escape(", ".join(failures))}</div>'
+            '<div class="ab-list"><div class="ab-item"><span>A probe is down. Incident '
+            'counts below describe what Haris still saw; see Incidents &amp; Health.</span>'
+            '</div></div></div>', unsafe_allow_html=True)
+    if not incidents:
+        probe_note = (f' · {len(probes)} health probe'
+                      f'{"s" if len(probes) != 1 else ""} passing' if probes and not failures
+                      else "")
+        st.markdown(
+            '<div class="alertbar ok"><div class="ab-head">✓ &nbsp;No security incidents '
+            f'this selection{probe_note}.</div></div>', unsafe_allow_html=True)
         return
     level = "crit" if crit else "warn"
     icon = "⛔" if crit else "⚠️"
@@ -674,6 +735,137 @@ def _audit_log(records, sessions, subjects):
         })
 
 
+PROBE_NOTE = {
+    "audit_chain": "re-verifies the hash chain over every record written this run",
+}
+
+COUNT_NOTE = {
+    "emitted":   ("survived de-duplication", ""),
+    "suppressed": ("collapsed into an earlier alert", ""),
+    "delivered": ("channel sends that succeeded", ""),
+    "failed":    ("channel sends that raised", "block"),
+    "skipped":   ("channel present but unconfigured", "flag"),
+}
+
+
+def _incidents_health(data, incidents):
+    """S3 — the operator page for the notification workstream.
+
+    Four blocks, and each one answers a question the alert banner cannot. The banner shows
+    six incidents; this shows all of them. The banner said "all systems healthy" when it
+    meant "nothing was raised"; this runs a probe and reports what it measured. And the two
+    blocks below the fold answer the question a broken alert channel makes urgent — is
+    anything actually listening, and did what we emitted get anywhere?
+    """
+    health = data.get("health") or {}
+    checks = health.get("checks") or {}
+    failures = health.get("failures") or []
+
+    # --- health -----------------------------------------------------------------------
+    st.markdown('<div class="panel-head"><h2>Health probes</h2>'
+                '<span class="hint">— measured, not inferred from the incident count</span>'
+                '</div>', unsafe_allow_html=True)
+    if not checks:
+        st.markdown('<div class="hstrip bad"><span class="hs-t">No probes registered</span>'
+                    '<span class="hs-s">nothing is being measured</span></div>',
+                    unsafe_allow_html=True)
+    elif health.get("healthy"):
+        st.markdown(
+            f'<div class="hstrip ok"><span class="hs-t">✓ &nbsp;{len(checks)} probe'
+            f'{"s" if len(checks) != 1 else ""} passing</span>'
+            f'<span class="hs-s">checked {html.escape(str(health.get("timestamp", "")))}'
+            '</span></div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f'<div class="hstrip bad"><span class="hs-t">⛔ &nbsp;'
+            f'{len(failures)} probe{"s" if len(failures) != 1 else ""} FAILING — '
+            f'{html.escape(", ".join(failures))}</span>'
+            f'<span class="hs-s">checked {html.escape(str(health.get("timestamp", "")))}'
+            '</span></div>', unsafe_allow_html=True)
+
+    rows = ['<div class="row r3"><div>probe</div><div>result</div><div>what it checks</div></div>']
+    for name, ok in checks.items():
+        cls, word = ("ok", "PASS") if ok else ("bad", "FAIL")
+        rows.append(f'<div class="row r3"><div class="mono">{html.escape(name)}</div>'
+                    f'<div class="{cls}">{word}</div>'
+                    f'<div class="dim">{html.escape(PROBE_NOTE.get(name, ""))}</div></div>')
+    st.markdown(f'<div class="optbl">{"".join(rows)}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="s3note">One probe, deliberately. <code>audit_chain</code> is the only '
+        'check available in a replay that can meaningfully fail — the state store and the '
+        'agent line-up cannot return False against a battery that has just finished '
+        'running, so listing them would add rows that are green by construction. A failing '
+        'probe is not merely drawn here: it raises CRITICAL through the same Notifier the '
+        'pipeline uses, so it appears in the feed below and leaves the process on the '
+        'webhook.</div>', unsafe_allow_html=True)
+
+    # --- channels ---------------------------------------------------------------------
+    st.markdown('<div class="panel-head"><h2>Alert channels</h2>'
+                '<span class="hint">— where an incident can actually go</span></div>',
+                unsafe_allow_html=True)
+    ch_rows = ['<div class="row r4"><div>channel</div><div>class</div>'
+               '<div>min severity</div><div>status</div></div>']
+    for ch in data.get("channels", []):
+        if ch["configured"]:
+            status = '<span class="ok">CONFIGURED</span>'
+        else:
+            status = ('<span class="off">UNCONFIGURED</span> '
+                      '<span class="dim">— sends are counted as skipped, not delivered'
+                      '</span>')
+        ch_rows.append(
+            f'<div class="row r4"><div class="mono">{html.escape(ch["name"])}</div>'
+            f'<div class="dim">{html.escape(ch["kind"])}</div>'
+            f'<div class="mono">{html.escape(ch["min_severity"].upper())}</div>'
+            f'<div>{status}</div></div>')
+    st.markdown(f'<div class="optbl">{"".join(ch_rows)}</div>', unsafe_allow_html=True)
+
+    # --- counters ---------------------------------------------------------------------
+    st.markdown('<div class="panel-head"><h2>Notifier counters</h2>'
+                '<span class="hint">— this process, since start</span></div>',
+                unsafe_allow_html=True)
+    counts = data.get("counts") or {}
+    cells = "".join(
+        f'<div class="kpi {COUNT_NOTE.get(k, ("", ""))[1]}">'
+        f'<div class="k-label">{html.escape(k)}</div>'
+        f'<div class="k-val">{counts.get(k, 0)}</div>'
+        f'<div class="k-delta">{html.escape(COUNT_NOTE.get(k, ("", ""))[0])}</div></div>'
+        for k in ("emitted", "suppressed", "delivered", "failed", "skipped"))
+    st.markdown(f'<div class="kpis" style="grid-template-columns:repeat(5,1fr)">{cells}</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="s3note">Read <code>delivered</code>, <code>failed</code> and '
+        '<code>skipped</code> per channel-send rather than per event: one event fanning out '
+        'to two channels counts twice. The separation earns its keep — during the deployment '
+        'the webhook secret held placeholder text, and it was <code>failed</code> rising '
+        'while <code>emitted</code> stayed correct that said the alerting was working and '
+        'the destination was not. A channel that is merely unconfigured lands in '
+        '<code>skipped</code> instead, so "nobody set a webhook" and "the webhook is '
+        'rejecting us" never read the same.</div>', unsafe_allow_html=True)
+
+    # --- feed -------------------------------------------------------------------------
+    st.markdown('<div class="panel-head"><h2>Incident feed</h2>'
+                '<span class="hint">— every alert this run, sanitized</span></div>',
+                unsafe_allow_html=True)
+    if not incidents:
+        st.markdown('<div class="feed"><div class="empty">No incidents raised for the '
+                    'selected scenario.</div></div>', unsafe_allow_html=True)
+    else:
+        items = "".join(
+            f'<div class="fi"><span class="sv {i["severity"]}">{i["severity"].upper()}</span>'
+            f'<span class="cat">{html.escape(i["category"])}</span>'
+            f'<span>{html.escape(i["summary"])}</span>'
+            f'<span class="ses">{html.escape(i.get("session_id") or "—")}</span>'
+            f'<span class="ts">{html.escape(i["timestamp"])}</span></div>'
+            for i in incidents)
+        st.markdown(f'<div class="feed">{items}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="s3note">Every row is the sanitized copy — category, severity, source, '
+        'summary, a content <em>reference</em> and a session id. The message body and the '
+        'free-form metadata are stripped at the Notifier before an event reaches any '
+        'channel, including this one, so the operator console cannot become the leak the '
+        'block prevented.</div>', unsafe_allow_html=True)
+
+
 @st.cache_resource
 def _configure_operational_logging() -> bool:
     """Give the Tier-1 operational logger a destination in the DEPLOYED path.
@@ -729,7 +921,7 @@ def main():
     if scenario != "All scenarios":
         selected_ids = {r["session_id"] for r in recs}
         incidents = [i for i in incidents if i.get("session_id") in selected_ids]
-    _alert_banner(incidents)
+    _alert_banner(incidents, data.get("health"))
 
     if page == "Overview":
         _kpis(kpis)
@@ -768,6 +960,9 @@ def main():
 
     elif page == "Audit Log":
         _audit_log(recs, sessions, subjects)
+
+    elif page == "Incidents & Health":
+        _incidents_health(data, incidents)
 
 
 if __name__ == "__main__":

@@ -380,6 +380,50 @@ def _incident_dict(event) -> dict[str, Any]:
     }
 
 
+def _channel_dict(channel) -> dict[str, Any]:
+    """A Channel -> the three facts the operator page reports about it.
+
+    `configured` is deliberately separate from presence. A WebhookChannel with no URL is
+    still in the channel list and still counted by the Notifier -- as `skipped`, not as
+    `delivered` -- and reporting it as an active route would claim a delivery path the
+    deployment does not have. `enabled` is read with getattr because only the channels that
+    CAN be unconfigured define it; a BufferChannel is always live."""
+    return {
+        "name": getattr(channel, "name", type(channel).__name__),
+        "min_severity": channel.min_severity.value,
+        "configured": bool(getattr(channel, "enabled", True)),
+        "kind": type(channel).__name__,
+    }
+
+
+def _run_health(audit, notifier) -> dict[str, Any]:
+    """Run the health probes against THIS replay's audit log and return the status.
+
+    One probe is registered, and the restraint is the point. `audit_chain_probe` is the only
+    check available here that can meaningfully fail: it re-verifies the hash chain, so a
+    corrupted or rewritten record turns the page red. A state-store probe and an
+    agents-present probe exist in `haris/notify/health.py`, but against a battery that has
+    just finished running they cannot return False -- registering them would pad the table
+    with rows that are green by construction, which is the kind of health check the design
+    notes call theatre.
+
+    The check is bound to the SAME Notifier the pipeline used, so a failure is not merely
+    displayed: it raises CRITICAL through the one dispatcher, which means it appears in the
+    incident feed and, if HARIS_ALERT_WEBHOOK is set, leaves the process. That is why this
+    runs before the incident buffer is harvested."""
+    from haris.notify.health import HealthCheck, audit_chain_probe
+
+    health = HealthCheck(notifier=notifier, source="dashboard-health")
+    health.register("audit_chain", audit_chain_probe(audit))
+    status = health.check()
+    return {
+        "healthy": status.healthy,
+        "checks": dict(status.checks),
+        "failures": list(status.failures),
+        "timestamp": _fmt_ts(status.timestamp),
+    }
+
+
 def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> dict[str, Any]:
     """Everything the dashboard needs, in one call. Reads from Haris's audit log, and
     collects the run's notification events (blocked leaks, any detector crash) into a
@@ -401,6 +445,13 @@ def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> di
                                   WebhookChannel(min_severity=Severity.WARNING)])
     audit = run_battery(mode=mode, include_secrets=include_secrets, notifier=notifier)
     records = _display_records(audit)
+
+    # ORDER MATTERS, and it is the difference between a health surface and a health picture.
+    # The check runs through `notifier`, so a failed probe is one more CRITICAL event; reading
+    # the buffer or the counters first would render a page that omits the very failure it was
+    # opened to report. Everything below this line is harvested after the check.
+    health = _run_health(audit, notifier)
+
     return {
         "mode": mode.value,
         "records": records,
@@ -417,4 +468,12 @@ def get_dashboard(mode: Mode = Mode.ENFORCE, include_secrets: bool = True) -> di
             "records": len(audit),
             "keyed": audit.is_keyed,
         },
+        # S3 — what the Incidents & Health page renders. Plain dicts throughout, because
+        # `_load` is wrapped in `@st.cache_data` and must be able to serialise the result.
+        "health": health,
+        "channels": [_channel_dict(c) for c in notifier.channels],
+        # A COPY. `notifier.counts` is the live dict on an object that outlives this call,
+        # and handing the cache a reference to mutable state is how a cached page starts
+        # disagreeing with itself.
+        "counts": dict(notifier.counts),
     }
