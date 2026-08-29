@@ -11,9 +11,11 @@
 #   * unbuffered stdout, so CloudWatch shows log lines as they happen
 #   * a container HEALTHCHECK against the same endpoint the ALB target group polls
 #
-# The base image is pinned by tag during development. Pin it by digest before the
-# submission build — see the note at the end of this file.
-FROM python:3.11-slim
+# The base image is pinned by DIGEST, not by tag: a tag moves when the upstream
+# image is rebuilt, a digest does not. This is what makes the build reproducible
+# on a grader's machine and at any future date, and it is also what makes the ECR
+# scan result meaningful — we know exactly which base layer was scanned.
+FROM python:3.11-slim@sha256:be1575ed968de893bd54f4c56315ff7c4736ce522c1bca08fd521731aafc0d76
 
 # --------------------------------------------------------------------------- #
 # Interpreter behaviour.                                                       #
@@ -105,23 +107,24 @@ CMD ["streamlit", "run", "demo_app/dashboard.py", \
      "--server.port=8501", "--server.address=0.0.0.0"]
 
 # --------------------------------------------------------------------------- #
-# Before the submission build, pin the base image by digest for reproducibility:#
-#                                                                              #
-#   docker inspect --format='{{index .RepoDigests 0}}' python:3.11-slim         #
-#                                                                              #
-# then replace the FROM line above with the sha256 form it prints, e.g.         #
-#   FROM python:3.11-slim@sha256:<digest>                                       #
-#                                                                              #
-# Pinning is left until last on purpose — a pinned digest makes iterating on    #
-# the image slower, and the value is in the final artefact, not the drafts.     #
-#                                                                              #
-# Build the submission image with provenance disabled:                          #
-#                                                                              #
-#   docker buildx build --provenance=false -t <repo>:submission .              #
-#                                                                              #
-# The default buildx build pushes an OCI image INDEX carrying a provenance      #
-# attestation. ECR does not scan indexes, so `describe-image-scan-findings      #
-# --image-id imageTag=<tag>` returns ScanNotFoundException even though the      #
-# console resolves the child manifest and shows results. Disabling provenance   #
-# makes the tag address a single manifest, so the scan is addressable by tag.   #
+# Build the submission image with provenance disabled:                         #
+#                                                                             #
+#   docker buildx build --provenance=false -t <repo>:<tag> .                   #
+#                                                                             #
+# The default buildx build pushes an OCI image INDEX carrying a provenance     #
+# attestation. ECR does not scan indexes, so `describe-image-scan-findings     #
+# --image-id imageTag=<tag>` returns ScanNotFoundException even though the     #
+# console resolves the child manifest and shows results. Disabling provenance  #
+# makes the tag address a single manifest, so the scan is addressable by tag.  #
+#                                                                             #
+# The ECR repository is IMMUTABLE, so each build needs its own tag rather than #
+# overwriting the last. That is what makes the deployment circuit breaker's    #
+# rollback meaningful: the task definition it rolls back to still points at    #
+# the same bytes it was tested against.                                        #
+#                                                                             #
+# To refresh the base image digest on the FROM line above (only when           #
+# deliberately taking a newer base):                                           #
+#                                                                             #
+#   docker pull python:3.11-slim                                              #
+#   docker inspect --format='{{index .RepoDigests 0}}' python:3.11-slim        #
 # --------------------------------------------------------------------------- #

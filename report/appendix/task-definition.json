@@ -1,9 +1,9 @@
 {
-    "taskDefinitionArn": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:5",
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:7",
     "containerDefinitions": [
         {
             "name": "dashboard",
-            "image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris:v1",
+            "image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fea785a44d2069db73ce4f3c84235a16aa25f39c7334135487c4100",
             "cpu": 0,
             "links": [],
             "portMappings": [
@@ -24,6 +24,14 @@
                 {
                     "name": "HARIS_DASHBOARD_TOKEN",
                     "valueFrom": "arn:aws:secretsmanager:us-east-1:007267918845:secret:haris/dashboard-token-hmBUtX"
+                },
+                {
+                    "name": "HARIS_AUDIT_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:007267918845:secret:haris/audit-key-q2TDDb"
+                },
+                {
+                    "name": "HARIS_ALERT_WEBHOOK",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:007267918845:secret:haris/alert-webhook-43q0rX"
                 }
             ],
             "dnsServers": [],
@@ -49,7 +57,7 @@
     "taskRoleArn": "arn:aws:iam::007267918845:role/haris-task-role",
     "executionRoleArn": "arn:aws:iam::007267918845:role/haris-execution-role",
     "networkMode": "awsvpc",
-    "revision": 5,
+    "revision": 7,
     "volumes": [],
     "status": "ACTIVE",
     "requiresAttributes": [
@@ -72,6 +80,9 @@
             "name": "com.amazonaws.ecs.capability.docker-remote-api.1.17"
         },
         {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.21"
+        },
+        {
             "name": "com.amazonaws.ecs.capability.task-iam-role"
         },
         {
@@ -87,14 +98,14 @@
     "placementConstraints": [],
     "compatibilities": [
         "EC2",
-        "MANAGED_INSTANCES",
-        "FARGATE"
+        "FARGATE",
+        "MANAGED_INSTANCES"
     ],
     "requiresCompatibilities": [
         "FARGATE"
     ],
     "cpu": "1024",
     "memory": "2048",
-    "registeredAt": "2026-08-23T19:01:06.160000+03:00",
+    "registeredAt": "2026-08-29T11:37:06.413000+03:00",
     "registeredBy": "arn:aws:iam::007267918845:user/batoul-admin"
 }

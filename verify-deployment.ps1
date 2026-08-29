@@ -10,7 +10,17 @@
 #       pwsh ./verify-deployment.ps1
 #
 #   A workstation with a named profile:
-#       .\verify-deployment.ps1 -AwsProfile haris | Tee-Object -FilePath report\appendix\deployment-verification.txt
+#       .\verify-deployment.ps1 -AwsProfile haris
+#
+# To capture the appendix file, do NOT use `Tee-Object` or `>` on Windows
+# PowerShell 5.1: both write UTF-16, which renders as spaced-out garbage in most
+# viewers and diff tools. Appendix B is read by a grader, so write UTF-8 with no
+# BOM explicitly:
+#
+#   $out = .\verify-deployment.ps1 -AwsProfile haris | Out-String
+#   [System.IO.File]::WriteAllText(
+#       (Join-Path $PWD "report\appendix\deployment-verification.txt"),
+#       $out, (New-Object System.Text.UTF8Encoding $false))
 #
 # The -AwsProfile parameter exists because the account you REACH and the account
 # you MEANT are different claims. Section 1 proves the first one, and every
@@ -38,7 +48,13 @@ param(
     # created by hand, outside the stack, so it has its own lifecycle and could
     # legitimately be named differently.
     [string]$Repo     = "haris",
-    [string]$ImageTag = "v1"
+
+    # The tag whose scan findings section 6b reports. The DEPLOYED image is
+    # referenced by digest, not by tag - the SUMMARY asserts that the digest this
+    # tag points at is the digest the task definition runs, so scanning by tag
+    # and describing the deployed bytes are the same statement rather than an
+    # assumption.
+    [string]$ImageTag = "v2"
 )
 
 $ErrorActionPreference = "Continue"
@@ -113,6 +129,9 @@ aws acm describe-certificate --certificate-arn $certArn @P `
   --query "Certificate.{Status:Status,Domains:SubjectAlternativeNames,Method:DomainValidationOptions[0].ValidationMethod}" --output json
 
 Section "5. ECR - repository and images"
+# TagMutability must read IMMUTABLE. A mutable tag can be overwritten in place,
+# which would make the deployment circuit breaker's rollback return to a NAME
+# rather than to the bytes that were tested.
 aws ecr describe-repositories --repository-names $Repo @P `
   --query "repositories[].{Name:repositoryName,Uri:repositoryUri,Encryption:encryptionConfiguration.encryptionType,TagMutability:imageTagMutability}" --output json
 aws ecr describe-images --repository-name $Repo @P `
@@ -123,19 +142,26 @@ aws ecr get-registry-scanning-configuration @P --output json
 
 Section "6b. SCAN FINDINGS - the heading above promises these, so print them"
 # Ask by tag first. That works whenever the tag names a single manifest, which
-# is the case for any image built with --provenance=false.
+# is the case for any image built with --provenance=false - as the submission
+# image is. The fallback below therefore no longer fires for the current tag;
+# it is kept because v1 is still in the repository and is an OCI INDEX, and a
+# reader re-running this against that tag would otherwise get nothing.
 #
-# It does NOT work for a buildx default build: buildx pushes an OCI image INDEX,
-# and ECR does not scan indexes, so the tag returns ScanNotFoundException. The
-# console resolves the child manifest transparently; the CLI does not. The
-# fallback below resolves it explicitly, so the appendix carries real counts
-# either way - and once the submission image is pushed with --provenance=false
-# the fallback stops firing and this section needs no maintenance.
+# Why an index cannot be scanned by tag: buildx's default export pushes an OCI
+# image INDEX carrying a provenance attestation, and ECR does not scan indexes,
+# so the tag returns ScanNotFoundException. The console resolves the child
+# manifest transparently; the CLI does not.
 #
 # Note what BASIC scanning covers: OS packages from the distribution manifest.
 # It does not read requirements.lock.txt, so Python dependencies are UNSCANNED.
-# Language-level scanning needs Enhanced scanning (Amazon Inspector), scoped out
-# on cost. Say that in the report rather than letting a reader assume otherwise.
+# "No findings in application dependencies" is therefore a limit of the scanner,
+# not a measured property. Language-level scanning needs Enhanced scanning
+# (Amazon Inspector), scoped out on cost. Say that in the report rather than
+# letting a reader assume otherwise.
+#
+# Also note the findings are scored against the CVE database AT SCAN TIME. BASIC
+# does not re-scan automatically, so comparing two images scanned days apart
+# compares two databases, not two images. Re-scan both before quoting a delta.
 
 $scanTarget = "imageTag=$ImageTag"
 $counts = aws ecr describe-image-scan-findings --repository-name $Repo --image-id $scanTarget @P `
@@ -173,6 +199,16 @@ if ($scanTarget) {
     $counts
     aws ecr describe-image-scan-findings --repository-name $Repo --image-id $scanTarget @P `
       --query "imageScanFindings.findings[?severity=='CRITICAL'].{CVE:name,Package:attributes[?key=='package_name']|[0].value}" --output table
+    aws ecr describe-image-scan-findings --repository-name $Repo --image-id $scanTarget @P `
+      --query "imageScanFindings.{Scanned:imageScanCompletedAt,SourceUpdated:vulnerabilitySourceUpdatedAt}" --output json
+
+    # Cross-reference: the scan above must describe the bytes the service is
+    # actually running. Printed side by side so the appendix shows it rather
+    # than asking the reader to trust it; the SUMMARY asserts it.
+    $deployedImage = aws ecs describe-task-definition --task-definition $StackName @P `
+                       --query "taskDefinition.containerDefinitions[0].image" --output text
+    "scanned  : $scanTarget"
+    "deployed : $deployedImage"
 }
 
 Section "7. STACK - every resource must be CREATE_ or UPDATE_COMPLETE"
@@ -207,12 +243,24 @@ aws iam list-attached-role-policies --role-name $TaskRole @P --query "AttachedPo
 "Inline policies:"
 aws iam list-role-policies --role-name $TaskRole @P --query "PolicyNames" --output json
 
-Section "13. TASK DEFINITION - environment empty; BOTH secrets from Secrets Manager"
-# Secrets must list HARIS_DASHBOARD_TOKEN *and* HARIS_AUDIT_KEY. Without the
-# second one the deployed audit chain is unkeyed: corruption-evident, not
-# tamper-evident - and THREAT_MODEL.md claims the latter.
+Section "13. TASK DEFINITION - environment empty; ALL THREE secrets from Secrets Manager; image by digest"
+# Secrets must list HARIS_DASHBOARD_TOKEN, HARIS_AUDIT_KEY *and* HARIS_ALERT_WEBHOOK.
+#
+#   Without the second, the deployed audit chain is unkeyed: corruption-evident,
+#   not tamper-evident - and THREAT_MODEL.md claims the latter.
+#
+#   Without the third, the Notifier's webhook channel is a silent no-op. A
+#   blocked leak still reaches the dashboard banner, but leaves the container by
+#   no route at all, and the operational log counts every send as `skipped`.
+#
+# Env must stay empty: a value here would appear in `describe-task-definition`
+# output, which is exactly what the Secrets block exists to avoid.
+#
+# Image must be addressed by DIGEST rather than by tag, so the deployment
+# circuit breaker rolls back to bytes that were tested rather than to whatever a
+# name currently resolves to.
 aws ecs describe-task-definition --task-definition $StackName @P `
-  --query "taskDefinition.{Cpu:cpu,Memory:memory,Env:containerDefinitions[0].environment,Secrets:containerDefinitions[0].secrets[].name,LogDriver:containerDefinitions[0].logConfiguration.logDriver}" --output json
+  --query "taskDefinition.{Revision:revision,Cpu:cpu,Memory:memory,Image:containerDefinitions[0].image,Env:containerDefinitions[0].environment,Secrets:containerDefinitions[0].secrets[].name,LogDriver:containerDefinitions[0].logConfiguration.logDriver}" --output json
 
 Section "14. LOGS - retention must be set, and there must be recent events"
 aws logs describe-log-groups --log-group-name-prefix $LogGroup @P `
@@ -255,22 +303,40 @@ function Check($label, $condition) {
     "{0}  {1}" -f $(if ($condition) { "PASS" } else { "FAIL" }), $label
 }
 
-$svc  = aws ecs describe-services --cluster $Cluster --services $ServiceNm @P `
-          --query "services[0].deploymentConfiguration.deploymentCircuitBreaker.enable" --output text
-$stky = aws elbv2 describe-target-group-attributes --target-group-arn $tg @P `
-          --query "Attributes[?Key=='stickiness.enabled'].Value | [0]" --output text
-$secs = aws ecs describe-task-definition --task-definition $StackName @P `
-          --query "taskDefinition.containerDefinitions[0].secrets[].name" --output text
-$arec = aws route53 list-resource-record-sets --hosted-zone-id $zoneId @P `
-          --query "length(ResourceRecordSets[?Type=='A'])" --output text
-$wwwc = curl.exe -s -o NUL -w "%{http_code}" "https://www.$Domain"
+$svc   = aws ecs describe-services --cluster $Cluster --services $ServiceNm @P `
+           --query "services[0].deploymentConfiguration.deploymentCircuitBreaker.enable" --output text
+$stky  = aws elbv2 describe-target-group-attributes --target-group-arn $tg @P `
+           --query "Attributes[?Key=='stickiness.enabled'].Value | [0]" --output text
+$secs  = aws ecs describe-task-definition --task-definition $StackName @P `
+           --query "taskDefinition.containerDefinitions[0].secrets[].name" --output text
+$img   = aws ecs describe-task-definition --task-definition $StackName @P `
+           --query "taskDefinition.containerDefinitions[0].image" --output text
+$mut   = aws ecr describe-repositories --repository-names $Repo @P `
+           --query "repositories[0].imageTagMutability" --output text
+$tagDg = aws ecr describe-images --repository-name $Repo --image-ids imageTag=$ImageTag @P `
+           --query "imageDetails[0].imageDigest" --output text
+$arec  = aws route53 list-resource-record-sets --hosted-zone-id $zoneId @P `
+           --query "length(ResourceRecordSets[?Type=='A'])" --output text
+$wwwc  = curl.exe -s -o NUL -w "%{http_code}" "https://www.$Domain"
 
-Check "account is $AccountId"                       ($actual -eq $AccountId)
-Check "deployment circuit breaker enabled"          ($svc  -eq "true")
-Check "target group stickiness enabled"             ($stky -eq "true")
-Check "HARIS_AUDIT_KEY injected from Secrets Mgr"   ($secs -match "HARIS_AUDIT_KEY")
-Check "apex and www A records both present"         ([int]$arec -ge 2)
-Check "https://www.$Domain responds 200"            ($wwwc -eq "200")
+# Computed separately rather than inline: a multi-clause condition inside a
+# function call argument is the kind of thing that silently becomes $true.
+$allSecrets = ($secs -match "HARIS_DASHBOARD_TOKEN") -and
+              ($secs -match "HARIS_AUDIT_KEY") -and
+              ($secs -match "HARIS_ALERT_WEBHOOK")
+
+# An empty $tagDg would make the -like match trivially true, so require it.
+$scanMatchesDeployed = [bool]$tagDg -and ($img -like "*$tagDg")
+
+Check "account is $AccountId"                          ($actual -eq $AccountId)
+Check "deployment circuit breaker enabled"             ($svc  -eq "true")
+Check "target group stickiness enabled"                ($stky -eq "true")
+Check "all three task secrets injected"                $allSecrets
+Check "image pinned by digest, not tag"                ($img -match "@sha256:")
+Check "ECR repository is immutable"                    ($mut -eq "IMMUTABLE")
+Check "scanned tag '$ImageTag' is the deployed image"  $scanMatchesDeployed
+Check "apex and www A records both present"            ([int]$arec -ge 2)
+Check "https://www.$Domain responds 200"               ($wwwc -eq "200")
 
 Section "DONE"
 "Any line above that does not match its heading is a real finding, not a formatting quirk."

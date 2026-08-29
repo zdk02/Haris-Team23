@@ -19,8 +19,13 @@ Parameters:
 
   ImageUri:
     Type: String
-    Description: Full ECR image URI including tag.
-    Default: 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris:v1
+    Description: >
+      Full ECR image URI, addressed by DIGEST rather than by tag. The repository
+      is immutable, so a tag cannot be overwritten in place — but the digest is
+      what the task definition records, and that is what makes the deployment
+      circuit breaker's rollback return to bytes that were actually tested rather
+      than to whatever a name currently points at.
+    Default: 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fea785a44d2069db73ce4f3c84235a16aa25f39c7334135487c4100
 
   DashboardSecretArn:
     Type: String
