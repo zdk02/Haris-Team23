@@ -31,7 +31,7 @@ from haris.logging_config import configure_logging
 
 from demo_app.dashboard_data import (
     COLOR, ACTION_COLOR, get_dashboard, presidio_available,
-    compute_kpis, compute_modules, build_graph, INTERNAL_DOMAIN,
+    compute_kpis, compute_modules, build_graph, INTERNAL_DOMAIN, SCENARIOS,
 )
 from haris.schemas.policy import Mode
 
@@ -58,9 +58,18 @@ CSS = """
   radial-gradient(700px 500px at 10% 110%, rgba(180,135,255,.05), transparent 55%),
   var(--bg); color:var(--text); font-family:var(--f-ui); }
 /* keep the header (it holds the reopen-sidebar arrow) but make it blend in */
-#MainMenu, footer{ visibility:hidden; }
+/* Hide the hamburger, the footer and the "Deploy" button — this is an operator console on
+   a public URL, not somebody's editable app, and offering Deploy in the corner of a
+   security dashboard reads as a control the viewer might have.
+   HIDE THE BUTTONS, NEVER THE TOOLBAR. `stExpandSidebarButton` — the only way to reopen a
+   collapsed sidebar — is a child of `stToolbar`, so hiding the toolbar traps the operator
+   with no navigation and no way back. It is re-asserted below in case a future Streamlit
+   moves it under something else that gets hidden here. */
+#MainMenu, footer, [data-testid="stMainMenu"], [data-testid="stMainMenuButton"],
+[data-testid="stAppDeployButton"]{ visibility:hidden; }
 header[data-testid="stHeader"]{ background:transparent; }
-[data-testid="stSidebarCollapsedControl"]{ visibility:visible !important; opacity:1 !important; }
+[data-testid="stToolbar"], [data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; opacity:1 !important; }
 .block-container{ padding:1.1rem 1.6rem 3rem; max-width:100%; }
 [data-testid="stSelectbox"]{ max-width:560px; }
 [data-testid="stCustomComponentV1"]{ overflow:hidden; border-radius:12px; }
@@ -102,16 +111,19 @@ h1,h2,h3{ font-family:var(--f-display); }
 .pill.chain{ color:var(--allow); background:var(--allow-dim); border-color:rgba(53,214,164,.25); font-weight:600; }
 .pill.chain.broken{ color:var(--block); background:var(--block-dim); border-color:rgba(255,92,114,.35); }
 .pill.chain.unkeyed{ color:var(--flag); background:var(--surface-2); }
-.kpis{ display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:6px; }
+/* Six fixed columns squeezed the tiles at anything under a wide desktop and clipped the
+   latency value. auto-fit wraps them into a second row instead of shrinking each. */
+.kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:12px;
+  margin-bottom:6px; }
 .kpi{ background:var(--surface-1); border:1px solid var(--hairline-soft); border-radius:12px; padding:14px 16px; }
 .kpi .k-label{ font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--text-mut); }
-.kpi .k-val{ font-family:var(--f-display); font-size:30px; font-weight:600; line-height:1.1; margin-top:8px; }
+.kpi .k-val{ font-family:var(--f-display); font-size:27px; font-weight:600; line-height:1.1; margin-top:8px; }
 .kpi .k-delta{ font-family:var(--f-mono); font-size:11px; margin-top:2px; color:var(--text-dim); }
 .kpi.block .k-val{ color:var(--block); } .kpi.flag .k-val{ color:var(--flag); }
 .panel-head{ display:flex; align-items:center; gap:10px; margin:6px 0 4px; }
 .panel-head h2{ font-size:15px; font-weight:600; margin:0; }
 .panel-head .hint{ font-size:12px; color:var(--text-dim); }
-.mods{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.mods{ display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:12px; }
 .mod{ background:var(--surface-2); border:1px solid var(--hairline-soft); border-radius:10px; padding:13px 14px; }
 .mod .name{ font-weight:600; font-size:13px; }
 .mod .st{ font-family:var(--f-mono); font-size:10px; padding:2px 7px; border-radius:20px; float:right; }
@@ -221,6 +233,57 @@ div[data-testid="stVerticalBlock"] .stButton>button:hover{ background:var(--surf
   text-align:right; }
 .feed .empty{ padding:18px 14px; color:var(--text-mut); font-size:12.5px; }
 .s3note{ font-size:11.5px; color:var(--text-dim); margin:-12px 0 22px; line-height:1.65; }
+/* --- layout rhythm: one spacing rule instead of scattered <br> --- */
+.sect{ height:26px; }
+.sect.lg{ height:38px; }
+/* --- architecture header + reading guide (replaces .graph-intro) --- */
+.arc{ border:1px solid var(--hairline-soft); border-radius:14px; overflow:hidden;
+  margin:4px 0 12px; background:linear-gradient(120deg,rgba(90,169,255,.08),rgba(180,135,255,.04)); }
+.arc-head{ display:flex; justify-content:space-between; align-items:center; gap:18px;
+  padding:14px 18px 13px; }
+.arc-title{ font-family:var(--f-display); font-size:15px; font-weight:600; }
+.arc-copy{ color:var(--text-mut); font-size:11.5px; margin-top:3px; max-width:78ch;
+  line-height:1.6; }
+.arc-badge{ flex:none; color:var(--agent); font-family:var(--f-mono); font-size:9.5px;
+  letter-spacing:.1em; padding:6px 10px; border-radius:20px;
+  border:1px solid rgba(90,169,255,.28); background:rgba(90,169,255,.08); }
+.arc-stats{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  border-top:1px solid var(--hairline-soft); }
+.arc-stat{ padding:11px 18px; border-left:1px solid var(--hairline-soft); }
+.arc-stat:first-child{ border-left:none; }
+.arc-n{ font-family:var(--f-display); font-size:23px; font-weight:600; line-height:1.1; }
+.arc-l{ font-size:11.5px; color:var(--text); margin-top:2px; }
+.arc-s{ font-size:10.5px; color:var(--text-dim); margin-top:2px; font-family:var(--f-mono); }
+.bands{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px;
+  margin:0 0 12px; }
+.band{ display:flex; gap:11px; padding:11px 13px; border-radius:10px;
+  background:var(--surface-1); border:1px solid var(--hairline-soft); }
+.band .bnum{ flex:none; width:20px; height:20px; border-radius:50%; display:grid;
+  place-items:center; background:var(--surface-3); color:var(--text-mut);
+  font-family:var(--f-mono); font-size:10.5px; margin-top:1px; }
+.band .bt{ font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:7px; }
+.band .bc{ font-size:11px; color:var(--text-dim); margin-top:4px; line-height:1.6; }
+.band .bdot{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+.band .bdot.app{ background:var(--agent); } .band .bdot.ext{ background:var(--block); }
+.band .bdot.guard{ background:#8D6BD8; }
+/* --- grouped legend (replaces the flat 7-item row) --- */
+.legend2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:10px 26px; padding:12px 2px 2px; }
+.legend2 .lgt{ font-family:var(--f-mono); font-size:9.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--text-dim); margin-bottom:6px; }
+.legend2 .lgr{ display:flex; flex-wrap:wrap; gap:7px 15px; }
+.legend2 .li{ display:flex; align-items:center; gap:6px; font-size:11.5px;
+  color:var(--text-mut); }
+.legend2 .gl{ font-size:13px; line-height:1; }
+.legend2 .sw{ width:17px; height:3px; border-radius:2px; display:inline-block; }
+.legend2 .sw.dash{ background:repeating-linear-gradient(90deg,#8D6BD8 0 5px, transparent 5px 9px); }
+.legend2 .sw.dot2{ background:repeating-linear-gradient(90deg,var(--text-mut) 0 3px, transparent 3px 7px); }
+/* --- derivation note (how the diagram is built) --- */
+.deriv{ font-size:11.5px; color:var(--text-mut); line-height:1.75; }
+.deriv b{ color:var(--text); font-weight:600; }
+.deriv code{ font-family:var(--f-mono); font-size:11px; color:var(--agent);
+  background:rgba(90,169,255,.08); padding:1px 5px; border-radius:4px; }
+.deriv .warn{ color:var(--flag); }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -281,7 +344,14 @@ def _load(mode_value: str, include_secrets: bool):
 # --------------------------------------------------------------------------- #
 # Sidebar                                                                      #
 # --------------------------------------------------------------------------- #
-def _sidebar():
+def _sidebar(scenarios):
+    """Sidebar holds everything that CHANGES WHAT YOU SEE, in three groups: which page,
+    which slice of the run, and how Haris was configured for it.
+
+    The scenario picker moved here from the top of the main column. It is a filter — it
+    governs every panel on every page — and leaving it above the page title meant the
+    control appeared before the thing it controlled was named, while eating the full width
+    of the content area on every page including the ones with no scenario in them."""
     st.sidebar.markdown(
         '<div class="brand"><div class="mark">🛡️</div>'
         '<div><div class="ar">حارس <span style="font-size:14px">Haris</span></div>'
@@ -293,6 +363,11 @@ def _sidebar():
                                         "Incidents & Health"],
                             label_visibility="collapsed")
     st.sidebar.markdown("---")
+    st.sidebar.caption("SCOPE")
+    scenario = st.sidebar.selectbox("Scenario", ["All scenarios"] + scenarios,
+                                    key="scenario", label_visibility="collapsed",
+                                    help="Filters every panel, on every page.")
+    st.sidebar.markdown("---")
     st.sidebar.caption("CONTROL")
     mode_label = st.sidebar.radio("Enforcement mode", ["Enforce", "Monitor"],
                                   help="Enforce blocks/redacts; Monitor logs & flags only.")
@@ -302,7 +377,8 @@ def _sidebar():
     st.sidebar.markdown(
         '<div class="adapter"><span class="dot"></span> LangGraph adapter · connected</div>',
         unsafe_allow_html=True)
-    return page, (Mode.ENFORCE if mode_label == "Enforce" else Mode.MONITOR), include_secrets
+    return (page, scenario,
+            (Mode.ENFORCE if mode_label == "Enforce" else Mode.MONITOR), include_secrets)
 
 
 # --------------------------------------------------------------------------- #
@@ -410,7 +486,85 @@ def _kpis(k):
     st.markdown(f'<div class="kpis">{html_cells}</div>', unsafe_allow_html=True)
 
 
+def _architecture(graph, record_count):
+    """The header strip above the diagram — and the answer to "how would Haris know MY
+    system's architecture?"
+
+    It is not told. Every node and every edge here is derived from the audit log: senders
+    and receivers become nodes, the routes between them become edges, destinations named
+    in `recipient` become endpoints, and the agents that returned a verdict become the
+    inspection layer. Roles are inferred by degree — send-only is a source, receive-only a
+    sink, both an agent — so nothing in this diagram is configured per application.
+
+    The counts are stated because they are what makes that claim checkable: a reader can
+    compare "derived from N records" against the audit log's own length."""
+    apps = [n for n in graph["nodes"] if n["kind"] in ("source", "agent", "sink")]
+    guards = [n for n in graph["nodes"] if n["kind"] == "protection"]
+    endpoints = [n for n in graph["nodes"] if n["kind"] in ("internal", "external")]
+    external = [n for n in endpoints if n["kind"] == "external"]
+    routes = [e for e in graph["edges"] if e.get("relationship") == "flow"]
+
+    stats = [
+        (len(apps), "application nodes", "inferred from senders and receivers"),
+        (len(routes), "message routes", "one per observed sender to receiver pair"),
+        (len(endpoints), "endpoints", f"{len(external)} outside the trust boundary"),
+        (len(guards), "inspection agents", "one per agent that returned a verdict"),
+    ]
+    cells = "".join(
+        f'<div class="arc-stat"><div class="arc-n">{n}</div>'
+        f'<div class="arc-l">{html.escape(label)}</div>'
+        f'<div class="arc-s">{html.escape(sub)}</div></div>'
+        for n, label, sub in stats)
+    st.markdown(
+        '<div class="arc">'
+        '<div class="arc-head"><div>'
+        '<div class="arc-title">Protected multi-agent runtime</div>'
+        '<div class="arc-copy">Derived from '
+        f'{record_count} audit record{"s" if record_count != 1 else ""} — nothing about '
+        'this topology is declared or configured per application.</div></div>'
+        '<div class="arc-badge">OBSERVED, NOT DECLARED</div></div>'
+        f'<div class="arc-stats">{cells}</div></div>', unsafe_allow_html=True)
+
+
+def _graph_reading_guide():
+    """Three bands, named. The layout already encoded this — top row is the application,
+    right column is the trust boundary, bottom band is Haris — and nothing said so, which
+    is most of why the diagram read as a tangle rather than as a picture."""
+    st.markdown(
+        '<div class="bands">'
+        '<div class="band"><span class="bnum">1</span><div>'
+        '<div class="bt">Application lane <span class="bdot app"></span></div>'
+        '<div class="bc">Top row, left to right in the order messages actually flow. '
+        'Circles are your agents; the cylinder is whatever only ever sends.</div></div></div>'
+        '<div class="band"><span class="bnum">2</span><div>'
+        '<div class="bt">Egress column <span class="bdot ext"></span></div>'
+        '<div class="bc">Right side. Diamonds are destinations named in a message. Green '
+        'is inside the trust boundary, red is outside it.</div></div></div>'
+        '<div class="band"><span class="bnum">3</span><div>'
+        '<div class="bt">Haris inspection <span class="bdot guard"></span></div>'
+        '<div class="bc">Bottom band. Each security agent reports to the guard hub, which '
+        'is what sits on the route above. Dashed lines are checks, not traffic.</div>'
+        '</div></div></div>', unsafe_allow_html=True)
+
+
 def _graph(graph, compact=False):
+    """The protection map.
+
+    Three deliberate changes over the first version, all of them about legibility rather
+    than content — the node and edge set is exactly what `build_graph` produced.
+
+    ONLY DECISIONS ARE LABELLED. Every flow edge used to carry its action in capitals, so
+    a clean run drew ALLOW six times and the two labels that mattered were lost in it.
+    Routine traffic is now an unlabelled coloured arrow and only BLOCK, REDACT and FLAG
+    are named, which is the same information with the noise removed.
+
+    THE BANDS ARE EXPLICIT. Positions are computed from the node counts rather than
+    hand-tuned constants, so the diagram keeps its shape when a different application
+    produces a different number of agents.
+
+    THE LANES ARE LABELLED IN THE CANVAS. Caption nodes (vis `shape="text"`, no box, not
+    connected to anything) sit at the left of each band, so the reading order survives
+    being screenshotted away from this page."""
     try:
         from streamlit_agraph import agraph, Node, Edge, Config
     except Exception:
@@ -419,16 +573,23 @@ def _graph(graph, compact=False):
     node_color = {"source": COLOR["flag"], "agent": COLOR["agent"], "sink": "#6F7C98",
                   "external": COLOR["external"], "internal": COLOR["allow"],
                   "protection": "#8D6BD8", "security_hub": COLOR["sensitive"]}
-    node_shape = {"source": "database", "agent": "dot", "sink": "dot",
+    # Shape choice is not decorative here: vis draws the label INSIDE ellipse/database/box
+    # and BELOW dot/diamond/hexagon/square. A source called `record_reader` overflowed the
+    # cylinder it was drawn in, so sources are squares — still one shape per role, but the
+    # name sits under the node where it has room to be read.
+    node_shape = {"source": "square", "agent": "dot", "sink": "dot",
                   "external": "diamond", "internal": "diamond", "protection": "box",
                   "security_hub": "hexagon"}
 
-    # Fixed positions produce a stable, readable security architecture instead of a
-    # force-directed tangle. All groups and positions are derived from the live graph.
     app_nodes = [n for n in graph["nodes"] if n["kind"] in ("source", "agent", "sink")]
     guard_nodes = [n for n in graph["nodes"] if n["kind"] == "protection"]
     endpoint_nodes = [n for n in graph["nodes"] if n["kind"] in ("internal", "external")]
+    # Internal destinations first, so the trust boundary reads top-to-bottom as
+    # inside-then-outside rather than in whatever order the records happened to arrive.
+    endpoint_nodes.sort(key=lambda n: (n["kind"] == "external", n["label"]))
 
+    # Topological order along the application lane, so the row reads in the direction the
+    # messages travelled. Ties break alphabetically to keep the layout stable between runs.
     flow_edges = [e for e in graph["edges"] if e.get("relationship") == "flow"]
     indegree = {n["id"]: 0 for n in app_nodes}
     outgoing = {n["id"]: [] for n in app_nodes}
@@ -452,29 +613,42 @@ def _graph(graph, compact=False):
     ordered_apps.extend(sorted((n for n in app_nodes if n["id"] not in ordered_ids),
                                key=lambda n: n["label"]))
 
-    def spread(items, left, right, y):
+    # --- geometry, derived from the node counts rather than hand-tuned ------------------
+    # A band is described by its y, its left edge and the gap between members, so adding a
+    # sixth security agent widens the band instead of overlapping the fifth.
+    app_gap = 210 if not compact else 180
+    guard_gap = 190 if not compact else 160
+    endpoint_gap = 125 if not compact else 112
+    # The vertical extent is the binding constraint: vis scales the whole diagram to fit
+    # the canvas, so every pixel of unnecessary height shrinks the labels. These three
+    # rows are packed as tightly as the node sizes allow.
+    app_y, hub_y, guard_y = -140, 30, 175
+    caption_pad = 100          # how far a band caption sits from its own leftmost node
+    egress_pad = 55            # how far the EGRESS caption sits above its column
+
+    # Each band is centred on x=0 and grows outward, so its half-width is what everything
+    # else is placed against. Deriving these rather than hard-coding pixels is what keeps
+    # the layout correct for an application with two agents or with nine.
+    app_half = max(len(ordered_apps) - 1, 0) * app_gap / 2
+    guard_half = max(len(guard_nodes) - 1, 0) * guard_gap / 2
+    # Egress sits one full gap clear of the rightmost application node.
+    endpoint_x = app_half + app_gap
+
+    def lay_out(items, gap, y, centre_on=0):
         if not items:
             return {}
-        step = (right - left) / max(1, len(items) - 1)
-        return {n["id"]: (left + i * step, y) for i, n in enumerate(items)}
+        span = (len(items) - 1) * gap
+        left = centre_on - span / 2
+        return {n["id"]: (left + i * gap, y) for i, n in enumerate(items)}
 
+    app_centre = 0
     positions = {}
-    if compact:
-        app_left, app_right, app_y = -250, 60, -95
-        guard_left, guard_right, guard_y = -255, 145, 165
-        endpoint_x, endpoint_y, endpoint_gap = 195, -145, 105
-        hub_position = (-65, 35)
-    else:
-        app_left, app_right, app_y = -300, 120, -115
-        guard_left, guard_right, guard_y = -305, 220, 190
-        endpoint_x, endpoint_y, endpoint_gap = 255, -170, 125
-        hub_position = (-65, 55)
-    positions.update(spread(ordered_apps, app_left, app_right, app_y))
-    positions.update(spread(guard_nodes, guard_left, guard_right, guard_y))
-    positions.update(spread(endpoint_nodes, endpoint_x, endpoint_x, endpoint_y))
+    positions.update(lay_out(ordered_apps, app_gap, app_y, app_centre))
+    positions.update(lay_out(guard_nodes, guard_gap, guard_y, app_centre))
+    positions["haris::guard"] = (app_centre, hub_y)
     for i, endpoint in enumerate(endpoint_nodes):
-        positions[endpoint["id"]] = (endpoint_x, endpoint_y + i * endpoint_gap)
-    positions["haris::guard"] = hub_position
+        first_y = app_y - ((len(endpoint_nodes) - 1) * endpoint_gap) / 2
+        positions[endpoint["id"]] = (endpoint_x, first_y + i * endpoint_gap)
 
     def display_label(node):
         label = str(node["label"])
@@ -499,48 +673,102 @@ def _graph(graph, compact=False):
                          "border": "#E7ECF6" if n["kind"] in ("protection", "security_hub") else node_color.get(n["kind"], COLOR["agent"]),
                          "highlight": {"background": "#E7ECF6", "border": COLOR["agent"]}},
                   borderWidth=3 if n["kind"] == "security_hub" else (2 if n["kind"] == "protection" else 1),
+                  # Long agent names wrapped rather than allowed to run into a neighbour.
+                  widthConstraint={"maximum": 130},
                   font={"color": "#F5F7FC", "face": "IBM Plex Sans",
-                        "size": (10 if compact and n["kind"] == "protection" else
-                                 11 if compact else
-                                 11 if n["kind"] == "protection" else 14)})
+                        "size": (11 if compact and n["kind"] == "protection" else
+                                 12 if compact else
+                                 13 if n["kind"] == "protection" else 15)})
              for n in graph["nodes"]]
+
+    # Band captions. Text-shaped, unconnected and fixed, so vis treats them as inert
+    # labels rather than as part of the topology — the node and edge counts reported in
+    # the header above deliberately exclude them.
+    # Each caption hugs ITS OWN band rather than sharing one far-left margin. Anchoring
+    # them all to the widest band pushed the bounding box out on the left, and because vis
+    # scales to that box the nodes were squeezed into the right of the canvas with a third
+    # of it empty — the caption was quietly costing the diagram its size.
+    captions = [("lane::app", "APPLICATION", -app_half - caption_pad, app_y),
+                ("lane::haris", "HARIS INSPECTION", -guard_half - caption_pad,
+                 (hub_y + guard_y) // 2)]
+    if endpoint_nodes:
+        top_y = app_y - ((len(endpoint_nodes) - 1) * endpoint_gap) / 2
+        captions.append(("lane::egress", "EGRESS", endpoint_x, top_y - egress_pad))
+    nodes.extend(
+        Node(id=cid, label=text, shape="text", x=x, y=y,
+             fixed={"x": True, "y": True}, chosen=False,
+             font={"color": "#8B95AC", "face": "IBM Plex Mono",
+                   "size": 13 if compact else 14})
+        for cid, text, x, y in captions)
+
+    # Only a decision gets a label. ALLOW and LOG are the routine case and drawing the
+    # word six times buried the two that mattered; the colour already carries it.
+    def edge_label(e):
+        if e.get("relationship") in ("inspection", "protection"):
+            return ""
+        action = e["action"]
+        return action.upper() if action in ("block", "redact", "flag") else ""
+
     edges = [Edge(source=e["source"], target=e["target"],
                   color=("#8D6BD8" if e.get("relationship") == "inspection"
                          else COLOR["agent"] if e.get("relationship") == "protection"
                          else ACTION_COLOR.get(e["action"], COLOR["muted"])),
-                  label=("" if e.get("relationship") in ("inspection", "protection")
-                         else (e.get("label") or e["action"]).upper()),
+                  label=edge_label(e),
+                  title=f'{e["source"]} → {e["target"]} · {e["action"].upper()}',
                   dashes=True if e.get("relationship") == "inspection" else bool(e["sensitive"]),
                   width=(1 if e.get("relationship") == "inspection" else
                          2 if e.get("relationship") == "protection" else
                          3 if e["action"] == "block" else 2),
-                  font={"color": "#AAB5CB", "size": 8 if compact else 9, "face": "IBM Plex Mono",
-                        "strokeWidth": 0, "background": "#0F1523"},
+                  font={"color": "#E7ECF6", "size": 10 if compact else 11,
+                        "face": "IBM Plex Mono", "strokeWidth": 3,
+                        "strokeColor": "#0A0E17", "align": "top"},
                   smooth={"enabled": True, "type": "cubicBezier",
                           "forceDirection": "horizontal", "roundness": 0.35})
              for e in graph["edges"]]
-    graph_height = 410 if compact else max(520, min(680, 400 + len(graph["nodes"]) * 12))
-    cfg = Config(width=640 if compact else 760, height=graph_height, directed=True, physics=False,
+
+    graph_height = 470 if compact else 600
+    cfg = Config(width=1180, height=graph_height, directed=True, physics=False,
                  hierarchical=False,
                  nodeHighlightBehavior=True, highlightColor=COLOR["agent"],
-                 collapsible=False, backgroundColor="#0F1523")
-    st.markdown(
-        '<div class="graph-intro"><div><div class="gi-title">Protected multi-agent runtime</div>'
-        '<div class="gi-copy">Live message routes with Haris inspection agents and policy outcomes.</div></div>'
-        f'<div class="gi-badge">{len(graph["nodes"])} NODES · {len(graph["edges"])} LINKS</div></div>',
-        unsafe_allow_html=True)
+                 collapsible=False, backgroundColor="#0F1523",
+                 # The canvas sits mid-page and vis captures the wheel by default, so
+                 # scrolling PAST the diagram zoomed it instead of moving the page — and
+                 # the reader arrived at the audit log with the graph left at some random
+                 # magnification. With zoomView off the wheel is no longer consumed and
+                 # the page scrolls normally over the canvas.
+                 #
+                 # Wheel zoom is not replaced. `navigationButtons` would give it back on a
+                 # click, but vis draws them as bright green arrows and the component runs
+                 # in its own iframe, so there is no way to restyle them to this theme —
+                 # seven clashing controls to regain a zoom a fit-to-canvas diagram does
+                 # not need. Panning still works by dragging. Flip it to True if a much
+                 # larger deployment ever outgrows the canvas.
+                 #
+                 # Dragging NODES is off because position is meaning here: a node pulled
+                 # out of its band stops being in the lane that says what it is.
+                 interaction={"zoomView": False, "dragView": True, "dragNodes": False,
+                              "hover": True, "tooltipDelay": 150, "keyboard": False,
+                              "navigationButtons": False, "selectConnectedEdges": True})
     agraph(nodes=nodes, edges=edges, config=cfg)
     st.markdown(
-        '<div class="legend">'
-        '<div class="item"><span class="sw" style="background:var(--allow)"></span>Allowed</div>'
-        '<div class="item"><span class="sw" style="background:var(--flag)"></span>Flagged</div>'
-        '<div class="item"><span class="sw" style="background:var(--sensitive)"></span>Redacted</div>'
-        '<div class="item"><span class="sw" style="background:var(--block)"></span>Blocked</div>'
-        '<div class="item"><span class="sw dash"></span>Security check</div>'
-        '<div class="item"><span class="sw" style="background:var(--agent)"></span>Protected by Haris</div>'
-        '<div class="item"><span style="color:var(--sensitive);font-size:15px">■</span>Haris protection agent</div></div>',
+        '<div class="legend2">'
+        '<div class="lg"><div class="lgt">Nodes</div><div class="lgr">'
+        '<span class="li"><span class="gl" style="color:var(--flag)">&#9632;</span>Source</span>'
+        '<span class="li"><span class="gl" style="color:var(--agent)">&#9679;</span>Agent</span>'
+        '<span class="li"><span class="gl" style="color:var(--allow)">&#9670;</span>Internal endpoint</span>'
+        '<span class="li"><span class="gl" style="color:var(--block)">&#9670;</span>External endpoint</span>'
+        '<span class="li"><span class="gl" style="color:var(--sensitive)">&#11041;</span>Haris guard hub</span>'
+        '<span class="li"><span class="gl" style="color:#8D6BD8">&#9632;</span>Security agent</span>'
+        '</div></div>'
+        '<div class="lg"><div class="lgt">Route decision</div><div class="lgr">'
+        '<span class="li"><span class="sw" style="background:var(--allow)"></span>Allowed</span>'
+        '<span class="li"><span class="sw" style="background:var(--flag)"></span>Flagged</span>'
+        '<span class="li"><span class="sw" style="background:var(--sensitive)"></span>Redacted</span>'
+        '<span class="li"><span class="sw" style="background:var(--block)"></span>Blocked</span>'
+        '<span class="li"><span class="sw dash"></span>Inspection, not traffic</span>'
+        '<span class="li"><span class="sw dot2"></span>Carries sensitive data</span>'
+        '</div></div></div>',
         unsafe_allow_html=True)
-
 
 def _highlight_payload(text: str) -> str:
     esc = html.escape(text)
@@ -549,15 +777,56 @@ def _highlight_payload(text: str) -> str:
     return esc
 
 
-def _stream(records):
-    st.markdown('<div class="panel-head"><h2>Live inspection stream</h2>'
-                '<span class="hint">— click a hop to inspect</span></div>',
+def _stream(records, height=430):
+    """The hop list. Scrolls inside a fixed-height box rather than growing the page.
+
+    Across all scenarios this is a dozen full-width buttons, which pushed the inspector
+    that the buttons CONTROL below the fold — you clicked a hop and the result appeared
+    somewhere you had to go looking for. Capping the list is half the fix; putting the
+    inspector beside it rather than under it (see `main`) is the other half."""
+    st.markdown('<div class="panel-head"><h2>Inspection stream</h2>'
+                '<span class="hint">— click a hop to inspect it</span></div>',
                 unsafe_allow_html=True)
-    for i, r in enumerate(records):
-        dot = VERDICT_DOT.get(r["action"], "⚪")
-        label = f"{dot}  {r['sender']} → {r['receiver']}   ·   {r['action'].upper()}   ·   {r['timestamp']}"
-        if st.button(label, key=f"row-{i}", use_container_width=True):
-            st.session_state["sel"] = i
+    box = st.container(height=height, border=False)
+    with box:
+        for i, r in enumerate(records):
+            dot = VERDICT_DOT.get(r["action"], "⚪")
+            label = (f"{dot}  {r['sender']} → {r['receiver']}"
+                     f"   ·   {r['action'].upper()}   ·   {r['timestamp']}")
+            if st.button(label, key=f"row-{i}", use_container_width=True):
+                st.session_state["sel"] = i
+
+
+def _derivation_note():
+    """Where the diagram comes from — the question a reader asks the moment they picture
+    their OWN system in it. Kept in a collapsed expander so it documents the graph without
+    competing with it, and stated with its limits because the honest answer has two."""
+    with st.expander("How this diagram is built — and what it would show for your system"):
+        st.markdown(
+            '<div class="deriv">'
+            'Haris is never told your architecture. Every element below is derived from the '
+            'audit log, which means this page renders <b>any</b> application that runs '
+            'through an Orchestrator — the hospital demo is just what is loaded.'
+            '<br><br>'
+            '<b>Nodes</b> are the <code>sender</code> and <code>receiver</code> of every '
+            'recorded hop. <b>Roles are inferred by degree</b>: a node that only ever sends '
+            'is a source, one that only receives is a sink, one that does both is an agent. '
+            '<b>Edges</b> are the routes those hops travelled, coloured by the most severe '
+            'decision seen on each. <b>Endpoints</b> are destinations named in a message&rsquo;s '
+            '<code>recipient</code>, split by the configured trust boundary '
+            f'(<code>{html.escape(INTERNAL_DOMAIN)}</code> here). <b>The inspection layer</b> '
+            'is one node per security agent that actually returned a verdict — so an agent '
+            'you add appears without a line of UI code, and one that never runs never '
+            'appears.'
+            '<br><br>'
+            '<span class="warn">Two limits worth stating.</span> This is a map of what '
+            '<em>happened</em>, not of what is <em>possible</em>: a route that exists in '
+            'your code but carried no message in this window is not drawn, and a node that '
+            'only happened to send here is labelled a source even if it can also receive. '
+            'And node identity is only as trustworthy as the metadata binding — the adapter '
+            'fixes <code>sender</code> and <code>receiver</code> at wiring time, which is '
+            'what stops a compromised agent from drawing itself as somebody else.'
+            '</div>', unsafe_allow_html=True)
 
 
 def _inspector(records):
@@ -889,7 +1158,7 @@ def main():
     _configure_operational_logging()
     if not _authenticated():
         return
-    page, mode, include_secrets = _sidebar()
+    page, scenario, mode, include_secrets = _sidebar([sc.label for sc in SCENARIOS])
 
     if include_secrets and not _presidio_ok():
         st.warning("Presidio/spaCy not available — running without the Secrets & PII agent. "
@@ -899,8 +1168,6 @@ def main():
 
     data = _load(mode.value, include_secrets)
 
-    # Scenario filter — this is what makes every panel dynamic.
-    scenario = st.selectbox("Scenario", ["All scenarios"] + data["sessions"], key="scenario")
     if scenario == "All scenarios":
         recs, sessions = data["records"], data["sessions"]
     else:
@@ -924,33 +1191,37 @@ def main():
     _alert_banner(incidents, data.get("health"))
 
     if page == "Overview":
+        # Reordered so the page reads top-down as one argument: how much traffic, what the
+        # system looks like, what happened on a given hop, which checks did it, and the
+        # full record. The graph is full width because at 60% of a column it was a fixed
+        # pixel canvas inside a fluid box, which is what made it look cramped; and the
+        # stream now sits BESIDE the inspector it drives instead of a screen above it.
         _kpis(kpis)
-        left, right = st.columns([1.55, 1], gap="large")
+        st.markdown('<div class="sect"></div>', unsafe_allow_html=True)
+        _architecture(graph, len(recs))
+        _graph(graph, compact=True)
+        st.markdown('<div class="sect lg"></div>', unsafe_allow_html=True)
+        left, right = st.columns([1, 1.25], gap="large")
         with left:
-            st.markdown('<div class="panel-head"><h2>Agent interaction graph</h2>'
-                        '<span class="hint">— sensitive data traced across hops</span></div>',
-                        unsafe_allow_html=True)
-            _graph(graph, compact=True)
-        with right:
             _stream(recs)
-        st.markdown("<br>", unsafe_allow_html=True)
-        b1, b2 = st.columns([1.4, 1], gap="large")
-        with b1:
-            _modules(modules)
-        with b2:
+        with right:
             _inspector(recs)
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="sect lg"></div>', unsafe_allow_html=True)
+        _modules(modules)
+        st.markdown('<div class="sect lg"></div>', unsafe_allow_html=True)
         _audit_log(recs, sessions, subjects)
 
     elif page == "Agent Graph":
-        st.markdown('<div class="panel-head"><h2>Agent interaction graph</h2>'
-                    '<span class="hint">— full trajectory</span></div>', unsafe_allow_html=True)
+        _architecture(graph, len(recs))
+        _graph_reading_guide()
         _graph(graph)
+        st.markdown('<div class="sect"></div>', unsafe_allow_html=True)
+        _derivation_note()
 
     elif page == "Live Traffic":
-        c1, c2 = st.columns([1, 1.2], gap="large")
+        c1, c2 = st.columns([1, 1.25], gap="large")
         with c1:
-            _stream(recs)
+            _stream(recs, height=560)
         with c2:
             _inspector(recs)
 
