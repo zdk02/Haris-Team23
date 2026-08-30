@@ -1,9 +1,9 @@
 {
-    "taskDefinitionArn": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:7",
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:8",
     "containerDefinitions": [
         {
             "name": "dashboard",
-            "image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fea785a44d2069db73ce4f3c84235a16aa25f39c7334135487c4100",
+            "image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:23c0fb2d5e2846cdb1f3a3bcddea680e5734f7e98686b2ef6de24c9547f8648c",
             "cpu": 0,
             "links": [],
             "portMappings": [
@@ -57,7 +57,7 @@
     "taskRoleArn": "arn:aws:iam::007267918845:role/haris-task-role",
     "executionRoleArn": "arn:aws:iam::007267918845:role/haris-execution-role",
     "networkMode": "awsvpc",
-    "revision": 7,
+    "revision": 8,
     "volumes": [],
     "status": "ACTIVE",
     "requiresAttributes": [
@@ -106,6 +106,6 @@
     ],
     "cpu": "1024",
     "memory": "2048",
-    "registeredAt": "2026-08-29T11:37:06.413000+03:00",
+    "registeredAt": "2026-08-30T20:36:20.904000+03:00",
     "registeredBy": "arn:aws:iam::007267918845:user/batoul-admin"
 }

@@ -82,6 +82,12 @@
         "Bytes": 294941681,
         "Media": "application/vnd.oci.image.index.v1+json",
         "Digest": "sha256:67887a7b4f68bb47e7d65782293ba0d4f87bb3bd110ba98a1fdbfb985b6ce2db"
+    },
+    {
+        "Tag": "v3",
+        "Bytes": 296990200,
+        "Media": "application/vnd.oci.image.manifest.v1+json",
+        "Digest": "sha256:23c0fb2d5e2846cdb1f3a3bcddea680e5734f7e98686b2ef6de24c9547f8648c"
     }
 ]
 
@@ -111,7 +117,8 @@
 ======================================================================
 {
     "HIGH": 15,
-    "MEDIUM": 4,
+    "MEDIUM": 6,
+    "LOW": 1,
     "UNDEFINED": 2,
     "CRITICAL": 4
 }
@@ -120,17 +127,17 @@
 +-----------------+-----------+
 |       CVE       |  Package  |
 +-----------------+-----------+
-|  CVE-2026-12087 |  perl     |
 |  CVE-2026-57433 |  perl     |
-|  CVE-2026-13221 |  perl     |
+|  CVE-2026-12087 |  perl     |
 |  CVE-2026-5450  |  glibc    |
+|  CVE-2026-13221 |  perl     |
 +-----------------+-----------+
 {
-    "Scanned": "2026-08-26T20:20:30+03:00",
-    "SourceUpdated": "2026-08-26T20:20:30+03:00"
+    "Scanned": "2026-08-30T20:34:27+03:00",
+    "SourceUpdated": "2026-08-30T20:34:27+03:00"
 }
-scanned  : imageTag=v2
-deployed : 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fea785a44d2069db73ce4f3c84235a16aa25f39c7334135487c4100
+scanned  : imageTag=v3
+deployed : 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:23c0fb2d5e2846cdb1f3a3bcddea680e5734f7e98686b2ef6de24c9547f8648c
 
 ======================================================================
   7. STACK - every resource must be CREATE_ or UPDATE_COMPLETE
@@ -190,7 +197,7 @@ deployed : 007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fe
     "Status": "ACTIVE",
     "Running": 1,
     "Desired": 1,
-    "TaskDef": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:7",
+    "TaskDef": "arn:aws:ecs:us-east-1:007267918845:task-definition/haris:8",
     "CircuitBreaker": {
         "enable": true,
         "rollback": true,
@@ -321,10 +328,10 @@ Inline policies:
   13. TASK DEFINITION - environment empty; ALL THREE secrets from Secrets Manager; image by digest
 ======================================================================
 {
-    "Revision": 7,
+    "Revision": 8,
     "Cpu": "1024",
     "Memory": "2048",
-    "Image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:39debb061fea785a44d2069db73ce4f3c84235a16aa25f39c7334135487c4100",
+    "Image": "007267918845.dkr.ecr.us-east-1.amazonaws.com/haris@sha256:23c0fb2d5e2846cdb1f3a3bcddea680e5734f7e98686b2ef6de24c9547f8648c",
     "Env": [],
     "Secrets": [
         "HARIS_DASHBOARD_TOKEN",
@@ -344,8 +351,8 @@ Inline policies:
     }
 ]
 {
-    "Stream": "dashboard/dashboard/c95337ebe72a49038e00be43940af93a",
-    "LastEvent": 1787993852570
+    "Stream": "dashboard/dashboard/2aeb82979836423cbad1a94f64690c49",
+    "LastEvent": 1788111545420
 }
 
 ======================================================================
@@ -391,7 +398,7 @@ PASS  target group stickiness enabled
 PASS  all three task secrets injected
 PASS  image pinned by digest, not tag
 PASS  ECR repository is immutable
-PASS  scanned tag 'v2' is the deployed image
+PASS  scanned tag 'v3' is the deployed image
 PASS  apex and www A records both present
 PASS  https://www.haris-monitor.com responds 200
 
