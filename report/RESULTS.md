@@ -1,6 +1,6 @@
 # Results — recorded headline set
 
-**Run date:** 2026-08-26 · **Corpus:** seed 23, 576 scenarios · **Tests:** 450 passing
+**Run date:** 2026-08-26 · **Corpus:** seed 23, 576 scenarios · **Tests:** 480 passing
 
 Every figure below comes from a command in this repository. Nothing here is typed by hand
 from a terminal, and nothing in the report or the deck should be either: if a number in
