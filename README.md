@@ -8,7 +8,9 @@ The threat model it is built against: **one agent in a multi-agent system is com
 Everything that agent puts in a message — including the metadata saying who it is and where
 the message is going — is attacker-controlled. See `THREAT_MODEL.md`.
 
-**Live dashboard:** https://haris-monitor.com (sign-in token supplied with the submission)
+**Live dashboard:** https://haris-monitor.com — read-only, replaying a recorded scenario
+battery over synthetic data. The sign-in token is in Section 5 of the report, and is
+rotated after assessment.
 
 ---
 
